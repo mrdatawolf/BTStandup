@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from app import BASE_DIR, get_database_path, resolve_path
+from app_config import BASE_DIR, get_database_path, resolve_path
 
 
 def create_backup(

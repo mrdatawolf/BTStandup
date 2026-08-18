@@ -1,36 +1,30 @@
+import json
 import os
 import re
-import sqlite3
+import time
 from contextlib import closing, contextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
+
+from app_config import BASE_DIR, connect_database, get_database_path
+from migrate import run_migrations
 
 
-BASE_DIR = Path(__file__).resolve().parent
-load_dotenv(BASE_DIR / ".env")
-
-
-def resolve_path(value: str) -> Path:
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else BASE_DIR / path
-
-
-def get_database_path() -> Path:
-    return resolve_path(os.getenv("DATABASE_PATH", "./data/standup.db"))
-
-
-def connect_database(database_path: Path | None = None) -> sqlite3.Connection:
-    path = database_path or get_database_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path, timeout=5)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA journal_mode = WAL")
-    connection.execute("PRAGMA busy_timeout = 5000")
-    return connection
+ENTRY_COLUMNS = (
+    "id, name, progress, target_date, initials, notes, sort_order, revision, "
+    "deleted_at, created_at, updated_at"
+)
+SORT_OPTIONS = {
+    "manual": "sort_order ASC, id ASC",
+    "target_date_asc": "target_date ASC, id ASC",
+    "target_date_desc": "target_date DESC, id DESC",
+    "progress_asc": "progress ASC, target_date ASC, id ASC",
+    "progress_desc": "progress DESC, target_date ASC, id ASC",
+    "initials_asc": "initials COLLATE NOCASE ASC, target_date ASC, id ASC",
+    "recent": "updated_at DESC, id DESC",
+}
 
 
 @contextmanager
@@ -40,61 +34,86 @@ def open_database(database_path: Path | None = None):
             yield connection
 
 
-def initialize_database(database_path: Path | None = None) -> None:
-    with open_database(database_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 500),
-                progress INTEGER NOT NULL DEFAULT 0
-                    CHECK(progress BETWEEN 0 AND 100),
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        existing_columns = {
-            row["name"] for row in connection.execute("PRAGMA table_info(entries)")
-        }
-        migrations = {
-            "date": "ALTER TABLE entries ADD COLUMN date TEXT NOT NULL DEFAULT ''",
-            "initials": "ALTER TABLE entries ADD COLUMN initials TEXT NOT NULL DEFAULT ''",
-            "notes": "ALTER TABLE entries ADD COLUMN notes TEXT NOT NULL DEFAULT ''",
-            "sort_order": "ALTER TABLE entries ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0",
-        }
-        for column, statement in migrations.items():
-            if column not in existing_columns:
-                connection.execute(statement)
-        connection.execute(
-            "UPDATE entries SET sort_order = id WHERE sort_order = 0"
-        )
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def entry_to_dict(row: sqlite3.Row) -> dict:
-    return {
-        "id": row["id"],
-        "name": row["name"],
-        "progress": row["progress"],
-        "date": row["date"],
-        "initials": row["initials"],
-        "notes": row["notes"],
-        "sort_order": row["sort_order"],
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-    }
+def entry_to_dict(row) -> dict:
+    return {column: row[column] for column in (
+        "id", "name", "progress", "target_date", "initials", "notes",
+        "sort_order", "revision", "deleted_at", "created_at", "updated_at",
+    )}
+
+
+def event_snapshot(entry: dict | None, fields: list[str]) -> dict | None:
+    if entry is None:
+        return None
+    return {key: entry[key] for key in fields}
+
+
+def record_event(
+    connection,
+    entry_id: int,
+    event_type: str,
+    changed_fields: list[str],
+    before: dict | None,
+    after: dict | None,
+    client_id: str | None,
+) -> int:
+    cursor = connection.execute(
+        """
+        INSERT INTO entry_events (
+            entry_id, event_type, changed_fields, before_values, after_values,
+            client_id, occurred_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            entry_id,
+            event_type,
+            json.dumps(changed_fields),
+            json.dumps(event_snapshot(before, changed_fields)) if before is not None else None,
+            json.dumps(event_snapshot(after, changed_fields)) if after is not None else None,
+            client_id,
+            utc_now(),
+        ),
+    )
+    return cursor.lastrowid
 
 
 def create_app(database_path: Path | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["DATABASE_PATH"] = database_path or get_database_path()
-    initialize_database(app.config["DATABASE_PATH"])
+    run_migrations(app.config["DATABASE_PATH"])
 
     def database():
         return open_database(app.config["DATABASE_PATH"])
 
+    def client_id() -> str | None:
+        value = request.headers.get("X-Client-ID", "").strip()
+        return value[:64] or None
+
+    def fetch_entry(connection, entry_id: int):
+        row = connection.execute(
+            f"SELECT {ENTRY_COLUMNS} FROM entries WHERE id = ?", (entry_id,)
+        ).fetchone()
+        return entry_to_dict(row) if row else None
+
+    def conflict_response(current: dict | None):
+        return jsonify({
+            "error": "This entry changed in another browser. Review and retry your change.",
+            "current": current,
+        }), 409
+
+    def validate_date(value, field_name="Target date"):
+        if not isinstance(value, str):
+            return None, f"{field_name} must be in YYYY-MM-DD format."
+        try:
+            return date.fromisoformat(value).isoformat(), None
+        except ValueError:
+            return None, f"{field_name} must be a valid date in YYYY-MM-DD format."
+
     def validate_fields(payload: dict, creating: bool = False):
-        allowed = {"name", "progress", "date", "initials", "notes"}
+        allowed = {"name", "progress", "target_date", "initials", "notes"}
         if creating and "name" not in payload:
             return None, "Name is required."
         if not any(field in payload for field in allowed):
@@ -105,10 +124,9 @@ def create_app(database_path: Path | None = None) -> Flask:
             name = payload["name"]
             if not isinstance(name, str) or not name.strip():
                 return None, "Name is required."
-            name = name.strip()
-            if len(name) > 500:
+            values["name"] = name.strip()
+            if len(values["name"]) > 500:
                 return None, "Name must be 500 characters or fewer."
-            values["name"] = name
 
         if "progress" in payload:
             progress = payload["progress"]
@@ -118,16 +136,11 @@ def create_app(database_path: Path | None = None) -> Flask:
                 return None, "Progress must be between 0 and 100."
             values["progress"] = progress
 
-        if "date" in payload:
-            date_value = payload["date"]
-            if not isinstance(date_value, str):
-                return None, "Date must be in YYYY-MM-DD format."
-            if date_value:
-                try:
-                    date.fromisoformat(date_value)
-                except ValueError:
-                    return None, "Date must be a valid date in YYYY-MM-DD format."
-            values["date"] = date_value
+        if "target_date" in payload:
+            target_date, error = validate_date(payload["target_date"])
+            if error:
+                return None, error
+            values["target_date"] = target_date
 
         if "initials" in payload:
             initials = payload["initials"]
@@ -143,6 +156,12 @@ def create_app(database_path: Path | None = None) -> Flask:
 
         return values, None
 
+    def required_revision(payload):
+        revision = payload.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            return None, "A valid revision is required."
+        return revision, None
+
     @app.get("/")
     def index():
         return send_from_directory(BASE_DIR, "standup.html")
@@ -154,105 +173,302 @@ def create_app(database_path: Path | None = None) -> Flask:
     @app.get("/api/health")
     def health():
         with database() as connection:
-            connection.execute("SELECT 1").fetchone()
-        return jsonify({"status": "ok"})
+            schema_version = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
+        return jsonify({"status": "ok", "schema_version": schema_version})
 
     @app.get("/api/version")
     def version():
-        version_file = BASE_DIR / "VERSION.txt"
-        value = version_file.read_text(encoding="utf-8").strip()
+        value = (BASE_DIR / "VERSION.txt").read_text(encoding="utf-8").strip()
         if value.lower().startswith("version="):
             value = value.split("=", 1)[1].strip()
         return jsonify({"version": value})
 
     @app.get("/api/entries")
     def list_entries():
+        clauses = []
+        parameters = []
+
+        deleted = request.args.get("deleted", "false").lower()
+        if deleted == "false":
+            clauses.append("deleted_at IS NULL")
+        elif deleted == "true":
+            clauses.append("deleted_at IS NOT NULL")
+        elif deleted != "all":
+            return jsonify({"error": "deleted must be false, true, or all."}), 400
+
+        for query_name, operator in (("target_date_from", ">="), ("target_date_to", "<=")):
+            value = request.args.get(query_name)
+            if value:
+                validated, error = validate_date(value, query_name)
+                if error:
+                    return jsonify({"error": error}), 400
+                clauses.append(f"target_date {operator} ?")
+                parameters.append(validated)
+
+        query = request.args.get("q", "").strip()
+        if query:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("(name LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\')")
+            parameters.extend((f"%{escaped}%", f"%{escaped}%"))
+
+        initials = request.args.get("initials", "").strip().upper()
+        if initials:
+            if not re.fullmatch(r"[A-Z0-9]{1,5}", initials):
+                return jsonify({"error": "Invalid initials filter."}), 400
+            clauses.append("initials = ?")
+            parameters.append(initials)
+
+        sort = request.args.get("sort", "manual")
+        if sort not in SORT_OPTIONS:
+            return jsonify({"error": "Invalid sort option."}), 400
+
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         with database() as connection:
             rows = connection.execute(
-                "SELECT id, name, progress, date, initials, notes, sort_order, "
-                "created_at, updated_at FROM entries ORDER BY sort_order, id"
+                f"SELECT {ENTRY_COLUMNS} FROM entries{where} ORDER BY {SORT_OPTIONS[sort]}",
+                parameters,
             ).fetchall()
         return jsonify([entry_to_dict(row) for row in rows])
 
     @app.post("/api/entries")
     def add_entry():
         payload = request.get_json(silent=True) or {}
+        if not payload.get("target_date"):
+            payload["target_date"] = date.today().isoformat()
         values, error = validate_fields(payload, creating=True)
         if error:
             return jsonify({"error": error}), 400
 
+        now = utc_now()
         with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             next_order = connection.execute(
                 "SELECT COALESCE(MAX(sort_order), 0) + 1 FROM entries"
             ).fetchone()[0]
             cursor = connection.execute(
-                "INSERT INTO entries (name, progress, date, initials, notes, sort_order) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO entries (
+                    name, progress, target_date, initials, notes, sort_order,
+                    revision, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
                 (
-                    values["name"], values.get("progress", 0), values.get("date", ""),
-                    values.get("initials", ""), values.get("notes", ""), next_order,
+                    values["name"], values.get("progress", 0), values["target_date"],
+                    values.get("initials", ""), values.get("notes", ""),
+                    next_order, now, now,
                 ),
             )
-            row = connection.execute(
-                "SELECT id, name, progress, date, initials, notes, sort_order, "
-                "created_at, updated_at "
-                "FROM entries WHERE id = ?",
-                (cursor.lastrowid,),
-            ).fetchone()
-        return jsonify(entry_to_dict(row)), 201
+            entry = fetch_entry(connection, cursor.lastrowid)
+            record_event(
+                connection,
+                entry["id"],
+                "created",
+                [
+                    "name", "progress", "target_date", "initials", "notes",
+                    "sort_order", "revision", "deleted_at",
+                ],
+                None,
+                entry,
+                client_id(),
+            )
+        return jsonify(entry), 201
 
     @app.patch("/api/entries/<int:entry_id>")
     def update_entry(entry_id: int):
         payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
         values, error = validate_fields(payload)
         if error:
             return jsonify({"error": error}), 400
 
         with database() as connection:
-            assignments = ", ".join(f"{field} = ?" for field in values)
-            cursor = connection.execute(
-                f"UPDATE entries SET {assignments}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (*values.values(), entry_id),
-            )
-            if cursor.rowcount == 0:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
                 return jsonify({"error": "Entry not found."}), 404
-            row = connection.execute(
-                "SELECT id, name, progress, date, initials, notes, sort_order, "
-                "created_at, updated_at "
-                "FROM entries WHERE id = ?",
-                (entry_id,),
-            ).fetchone()
-        return jsonify(entry_to_dict(row))
+            if before["revision"] != revision:
+                return conflict_response(before)
+            changed = [field for field, value in values.items() if before[field] != value]
+            if not changed:
+                return jsonify(before)
+            assignments = ", ".join(f"{field} = ?" for field in changed)
+            now = utc_now()
+            connection.execute(
+                f"UPDATE entries SET {assignments}, revision = revision + 1, "
+                "updated_at = ? WHERE id = ? AND revision = ?",
+                (*(values[field] for field in changed), now, entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            event_type = "progress_changed" if changed == ["progress"] else "details_changed"
+            record_event(connection, entry_id, event_type, changed, before, after, client_id())
+        return jsonify(after)
+
+    @app.delete("/api/entries/<int:entry_id>")
+    def delete_entry(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
+                return jsonify({"error": "Entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+            now = utc_now()
+            connection.execute(
+                "UPDATE entries SET deleted_at = ?, updated_at = ?, revision = revision + 1 "
+                "WHERE id = ? AND revision = ?",
+                (now, now, entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            record_event(connection, entry_id, "deleted", ["deleted_at"], before, after, client_id())
+        return jsonify(after)
+
+    @app.post("/api/entries/<int:entry_id>/restore")
+    def restore_entry(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is None:
+                return jsonify({"error": "Deleted entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+            now = utc_now()
+            connection.execute(
+                "UPDATE entries SET deleted_at = NULL, updated_at = ?, revision = revision + 1 "
+                "WHERE id = ? AND revision = ?",
+                (now, entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            record_event(connection, entry_id, "restored", ["deleted_at"], before, after, client_id())
+        return jsonify(after)
 
     @app.put("/api/entries/order")
     def reorder_entries():
         payload = request.get_json(silent=True) or {}
-        entry_ids = payload.get("entry_ids")
-        if (
-            not isinstance(entry_ids, list)
-            or any(isinstance(item, bool) or not isinstance(item, int) for item in entry_ids)
-            or len(entry_ids) != len(set(entry_ids))
+        items = payload.get("entries")
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict)
+            or isinstance(item.get("id"), bool) or not isinstance(item.get("id"), int)
+            or isinstance(item.get("revision"), bool) or not isinstance(item.get("revision"), int)
+            for item in items
         ):
-            return jsonify({"error": "entry_ids must be a unique list of entry IDs."}), 400
+            return jsonify({"error": "entries must contain IDs and revisions."}), 400
+        ids = [item["id"] for item in items]
+        if len(ids) != len(set(ids)):
+            return jsonify({"error": "Entry IDs must be unique."}), 400
 
         with database() as connection:
-            current_ids = {row[0] for row in connection.execute("SELECT id FROM entries")}
-            if set(entry_ids) != current_ids:
-                return jsonify({"error": "The order must include every entry exactly once."}), 400
-            for position, entry_id in enumerate(entry_ids, start=1):
-                connection.execute(
-                    "UPDATE entries SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (position, entry_id),
-                )
-        return jsonify({"status": "ok"})
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                f"SELECT {ENTRY_COLUMNS} FROM entries WHERE deleted_at IS NULL ORDER BY sort_order, id"
+            ).fetchall()
+            current = {row["id"]: entry_to_dict(row) for row in rows}
+            if set(ids) != set(current):
+                return jsonify({"error": "Manual order must include every active entry."}), 400
+            for item in items:
+                if current[item["id"]]["revision"] != item["revision"]:
+                    return conflict_response(current[item["id"]])
 
-    @app.delete("/api/entries/<int:entry_id>")
-    def delete_entry(entry_id: int):
+            now = utc_now()
+            updated = []
+            for position, item in enumerate(items, start=1):
+                before = current[item["id"]]
+                if before["sort_order"] != position:
+                    connection.execute(
+                        "UPDATE entries SET sort_order = ?, revision = revision + 1, "
+                        "updated_at = ? WHERE id = ? AND revision = ?",
+                        (position, now, item["id"], item["revision"]),
+                    )
+                    after = fetch_entry(connection, item["id"])
+                    record_event(
+                        connection, item["id"], "reordered", ["sort_order"],
+                        before, after, client_id(),
+                    )
+                    updated.append(after)
+                else:
+                    updated.append(before)
+        return jsonify(updated)
+
+    @app.get("/api/entries/<int:entry_id>/history")
+    def entry_history(entry_id: int):
         with database() as connection:
-            cursor = connection.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
-            if cursor.rowcount == 0:
+            if fetch_entry(connection, entry_id) is None:
                 return jsonify({"error": "Entry not found."}), 404
-        return "", 204
+            rows = connection.execute(
+                """
+                SELECT id, entry_id, event_type, changed_fields, before_values,
+                       after_values, client_id, occurred_at
+                FROM entry_events WHERE entry_id = ? ORDER BY id DESC
+                """,
+                (entry_id,),
+            ).fetchall()
+        return jsonify([{
+            "id": row["id"],
+            "entry_id": row["entry_id"],
+            "event_type": row["event_type"],
+            "changed_fields": json.loads(row["changed_fields"]),
+            "before": json.loads(row["before_values"]) if row["before_values"] else None,
+            "after": json.loads(row["after_values"]) if row["after_values"] else None,
+            "client_id": row["client_id"],
+            "occurred_at": row["occurred_at"],
+        } for row in rows])
+
+    @app.get("/api/events")
+    def event_stream():
+        supplied_last_id = request.headers.get("Last-Event-ID") or request.args.get("after")
+        try:
+            last_id = int(supplied_last_id) if supplied_last_id is not None else None
+        except ValueError:
+            return jsonify({"error": "Last-Event-ID must be an integer."}), 400
+        if last_id is None:
+            with database() as connection:
+                last_id = connection.execute(
+                    "SELECT COALESCE(MAX(id), 0) FROM entry_events"
+                ).fetchone()[0]
+        heartbeat = max(5, int(os.getenv("SSE_HEARTBEAT_SECONDS", "20")))
+
+        @stream_with_context
+        def generate():
+            current_id = last_id
+            last_heartbeat = time.monotonic()
+            while True:
+                with database() as connection:
+                    events = connection.execute(
+                        "SELECT id, entry_id, event_type, occurred_at FROM entry_events "
+                        "WHERE id > ? ORDER BY id LIMIT 100",
+                        (current_id,),
+                    ).fetchall()
+                if events:
+                    for event in events:
+                        current_id = event["id"]
+                        data = json.dumps({
+                            "entry_id": event["entry_id"],
+                            "event_type": event["event_type"],
+                            "occurred_at": event["occurred_at"],
+                        })
+                        yield f"id: {current_id}\nevent: entry_changed\ndata: {data}\n\n"
+                    last_heartbeat = time.monotonic()
+                elif time.monotonic() - last_heartbeat >= heartbeat:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = time.monotonic()
+                time.sleep(1)
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app
 
@@ -262,6 +478,7 @@ if __name__ == "__main__":
 
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8080"))
+    threads = int(os.getenv("SERVER_THREADS", "32"))
     print(f"Starting BT Standup at http://{host}:{port}")
     print(f"Database: {get_database_path()}")
-    serve(create_app(), host=host, port=port)
+    serve(create_app(), host=host, port=port, threads=threads)

@@ -26,6 +26,8 @@
 
     h1 { margin: 0 0 24px; font-size: 28px; }
 
+    .field-label { display: block; margin-bottom: 5px; color: #4b5563; font-size: 12px; font-weight: 700; }
+
     .add-row {
       display: grid;
       grid-template-columns: 1fr 160px 85px auto;
@@ -33,7 +35,27 @@
       margin-bottom: 24px;
     }
 
-    input[type="text"], input[type="date"], textarea {
+    .filter-panel {
+      margin-bottom: 22px;
+      padding: 14px;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+
+    .filter-grid {
+      display: grid;
+      grid-template-columns: minmax(180px, 2fr) repeat(2, 145px) 85px 165px;
+      gap: 10px;
+      align-items: end;
+    }
+
+    .filter-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+    .deleted-toggle { display: inline-flex; align-items: center; gap: 7px; color: #4b5563; font-size: 14px; }
+    .clear-button { background: #e5e7eb; color: #374151; }
+    .result-count { color: #6b7280; font-size: 13px; }
+
+    input[type="text"], input[type="date"], select, textarea {
       width: 100%;
       padding: 12px;
       border: 1px solid #d1d5db;
@@ -140,6 +162,9 @@
 
     .notes-button { background: #fef3c7; color: #92400e; }
     .delete-button { background: #fee2e2; color: #b91c1c; }
+    .history-button { background: #e0f2fe; color: #075985; }
+    .restore-button { background: #dcfce7; color: #166534; }
+    .deleted-entry { opacity: 0.78; background: #fafafa; }
 
     .progress-row { display: flex; align-items: center; gap: 12px; }
     input[type="range"] { flex: 1; accent-color: #2563eb; cursor: pointer; }
@@ -170,6 +195,20 @@
 
     .notes-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 700; color: #78350f; }
     .notes-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+    .history-panel {
+      margin-top: 14px;
+      padding: 14px;
+      border: 1px solid #bae6fd;
+      border-radius: 10px;
+      background: #f0f9ff;
+      color: #0c4a6e;
+      font-size: 13px;
+    }
+    .history-title { display: block; margin-bottom: 8px; }
+    .history-list { margin: 0; padding-left: 22px; }
+    .history-list li + li { margin-top: 6px; }
+    .history-empty { margin: 0; }
 
     .edit-form {
       display: grid;
@@ -204,7 +243,7 @@
 
     @media (max-width: 680px) {
       .app { margin-top: 20px; padding: 20px; }
-      .add-row, .edit-form { grid-template-columns: 1fr; }
+      .add-row, .edit-form, .filter-grid { grid-template-columns: 1fr; }
       .entry-header { flex-direction: column; }
       .entry-actions { justify-content: flex-start; }
     }
@@ -216,10 +255,33 @@
 
     <div class="add-row">
       <input id="entryInput" type="text" maxlength="500" placeholder="Type a new entry..." />
-      <input id="dateInput" type="date" aria-label="Entry date" />
+      <input id="dateInput" type="date" aria-label="Target date" required />
       <input id="initialsInput" class="initials-input" type="text" maxlength="5" placeholder="Initials" aria-label="Initials" />
       <button class="add-button" id="addButton">Add entry</button>
     </div>
+
+    <section class="filter-panel" aria-label="Entry filters">
+      <div class="filter-grid">
+        <label><span class="field-label">Search title and notes</span><input id="searchInput" type="text" placeholder="Search..." /></label>
+        <label><span class="field-label">Target date from</span><input id="dateFromInput" type="date" /></label>
+        <label><span class="field-label">Target date through</span><input id="dateToInput" type="date" /></label>
+        <label><span class="field-label">Initials</span><input id="filterInitialsInput" class="initials-input" type="text" maxlength="5" placeholder="All" /></label>
+        <label><span class="field-label">Sort</span><select id="sortInput">
+          <option value="manual">Manual order</option>
+          <option value="target_date_asc">Target date: earliest</option>
+          <option value="target_date_desc">Target date: latest</option>
+          <option value="progress_asc">Progress: lowest</option>
+          <option value="progress_desc">Progress: highest</option>
+          <option value="initials_asc">Initials: A–Z</option>
+          <option value="recent">Recently changed</option>
+        </select></label>
+      </div>
+      <div class="filter-actions">
+        <label class="deleted-toggle"><input id="deletedInput" type="checkbox" /> View deleted entries</label>
+        <span id="resultCount" class="result-count"></span>
+        <button id="clearFiltersButton" class="clear-button">Clear filters</button>
+      </div>
+    </section>
 
     <section id="entries"></section>
     <p class="status" id="status" aria-live="polite"></p>

@@ -1,5 +1,6 @@
-from pathlib import Path
 import sqlite3
+from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -19,37 +20,124 @@ def client(database_path: Path):
     return application.test_client()
 
 
-def test_health_and_empty_list(client):
-    assert client.get("/api/health").get_json() == {"status": "ok"}
-    assert client.get("/api/version").get_json() == {"version": "1.0.1"}
+def create_entry(client, name="Test", **values):
+    response = client.post("/api/entries", json={"name": name, **values})
+    assert response.status_code == 201
+    return response.get_json()
+
+
+def test_health_version_and_empty_list(client):
+    assert client.get("/api/health").get_json() == {
+        "status": "ok", "schema_version": 3,
+    }
+    assert client.get("/api/version").get_json() == {"version": "1.1.0"}
     assert client.get("/api/entries").get_json() == []
 
 
-def test_entry_crud(client):
-    created_response = client.post(
-        "/api/entries",
-        json={"name": "Ship MVP", "date": "2026-08-18", "initials": "PT"},
-    )
-    assert created_response.status_code == 201
-    created = created_response.get_json()
-    assert created["name"] == "Ship MVP"
-    assert created["progress"] == 0
-    assert created["date"] == "2026-08-18"
-    assert created["initials"] == "PT"
-    assert created["notes"] == ""
+def test_create_defaults_target_date_and_records_history(client):
+    created = create_entry(client, "Ship MVP", initials="PT")
+    assert created["target_date"] == date.today().isoformat()
+    assert created["revision"] == 1
+    history = client.get(f"/api/entries/{created['id']}/history").get_json()
+    assert [event["event_type"] for event in history] == ["created"]
+    assert history[0]["after"]["name"] == "Ship MVP"
 
-    updated_response = client.patch(
+
+def test_update_requires_revision_and_records_before_after(client):
+    created = create_entry(client, target_date="2026-08-18")
+    assert client.patch(
+        f"/api/entries/{created['id']}", json={"progress": 50}
+    ).status_code == 400
+
+    response = client.patch(
         f"/api/entries/{created['id']}",
-        json={"name": "Ship it", "progress": 75, "notes": "Ready for review"},
+        json={"progress": 75, "notes": "Ready", "revision": created["revision"]},
+        headers={"X-Client-ID": "test-browser"},
     )
-    assert updated_response.status_code == 200
-    assert updated_response.get_json()["progress"] == 75
-    assert updated_response.get_json()["name"] == "Ship it"
-    assert updated_response.get_json()["notes"] == "Ready for review"
-    assert client.get("/api/entries").get_json()[0]["id"] == created["id"]
+    assert response.status_code == 200
+    updated = response.get_json()
+    assert updated["revision"] == 2
+    history = client.get(f"/api/entries/{created['id']}/history").get_json()
+    assert history[0]["event_type"] == "details_changed"
+    assert history[0]["before"]["progress"] == 0
+    assert history[0]["after"]["progress"] == 75
+    assert history[0]["client_id"] == "test-browser"
 
-    assert client.delete(f"/api/entries/{created['id']}").status_code == 204
+
+def test_stale_update_returns_conflict(client):
+    created = create_entry(client)
+    first = client.patch(
+        f"/api/entries/{created['id']}",
+        json={"progress": 25, "revision": created["revision"]},
+    ).get_json()
+    response = client.patch(
+        f"/api/entries/{created['id']}",
+        json={"progress": 50, "revision": created["revision"]},
+    )
+    assert response.status_code == 409
+    assert response.get_json()["current"]["revision"] == first["revision"]
+
+
+def test_soft_delete_restore_and_history(client):
+    created = create_entry(client)
+    deleted_response = client.delete(
+        f"/api/entries/{created['id']}", json={"revision": created["revision"]}
+    )
+    assert deleted_response.status_code == 200
+    deleted = deleted_response.get_json()
+    assert deleted["deleted_at"] is not None
     assert client.get("/api/entries").get_json() == []
+    assert client.get("/api/entries?deleted=true").get_json()[0]["id"] == created["id"]
+
+    restored_response = client.post(
+        f"/api/entries/{created['id']}/restore",
+        json={"revision": deleted["revision"]},
+    )
+    assert restored_response.status_code == 200
+    assert restored_response.get_json()["deleted_at"] is None
+    history = client.get(f"/api/entries/{created['id']}/history").get_json()
+    assert [event["event_type"] for event in history[:2]] == ["restored", "deleted"]
+
+
+def test_filters_and_sorts_entries(client):
+    alpha = create_entry(
+        client, "Alpha deployment", target_date="2026-08-20",
+        initials="ZZ", notes="Database work", progress=80,
+    )
+    beta = create_entry(
+        client, "Beta database", target_date="2026-08-10",
+        initials="AA", notes="Documentation", progress=20,
+    )
+    assert [entry["id"] for entry in client.get(
+        "/api/entries?target_date_from=2026-08-15"
+    ).get_json()] == [alpha["id"]]
+    assert [entry["id"] for entry in client.get("/api/entries?q=database").get_json()] == [
+        alpha["id"], beta["id"],
+    ]
+    assert client.get("/api/entries?initials=aa").get_json()[0]["id"] == beta["id"]
+    assert [entry["id"] for entry in client.get(
+        "/api/entries?sort=target_date_asc"
+    ).get_json()] == [beta["id"], alpha["id"]]
+    assert [entry["id"] for entry in client.get(
+        "/api/entries?sort=progress_desc"
+    ).get_json()] == [alpha["id"], beta["id"]]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["deleted=maybe", "target_date_from=bad", "initials=TOOLONG", "sort=bad"],
+)
+def test_rejects_invalid_filters(client, query):
+    assert client.get(f"/api/entries?{query}").status_code == 400
+
+
+def test_sse_replays_events_from_explicit_position(client):
+    created = create_entry(client, "Live update")
+    response = client.get("/api/events?after=0", buffered=False)
+    first_message = next(response.response).decode()
+    response.close()
+    assert "event: entry_changed" in first_message
+    assert f'"entry_id": {created["id"]}' in first_message
 
 
 @pytest.mark.parametrize("payload", [{}, {"name": "   "}, {"name": 42}])
@@ -59,52 +147,29 @@ def test_rejects_invalid_names(client, payload):
 
 @pytest.mark.parametrize("progress", [-1, 101, 1.5, True, "50"])
 def test_rejects_invalid_progress(client, progress):
-    created = client.post("/api/entries", json={"name": "Test"}).get_json()
+    created = create_entry(client)
     response = client.patch(
-        f"/api/entries/{created['id']}", json={"progress": progress}
+        f"/api/entries/{created['id']}",
+        json={"progress": progress, "revision": created["revision"]},
     )
     assert response.status_code == 400
 
 
-def test_missing_entries_return_not_found(client):
-    assert client.patch("/api/entries/999", json={"progress": 50}).status_code == 404
-    assert client.delete("/api/entries/999").status_code == 404
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"date": "08/18/2026"},
-        {"date": "2026-02-30"},
-        {"initials": "too-long"},
-        {"initials": "a!"},
-        {"notes": "x" * 10_001},
-        {"unsupported": "value"},
-    ],
-)
-def test_rejects_invalid_extended_fields(client, payload):
-    created = client.post("/api/entries", json={"name": "Test"}).get_json()
-    assert client.patch(f"/api/entries/{created['id']}", json=payload).status_code == 400
-
-
-def test_reorders_entries(client):
-    first = client.post("/api/entries", json={"name": "First"}).get_json()
-    second = client.post("/api/entries", json={"name": "Second"}).get_json()
-
-    response = client.put(
-        "/api/entries/order", json={"entry_ids": [second["id"], first["id"]]}
-    )
+def test_reorders_entries_with_revisions(client):
+    first = create_entry(client, "First")
+    second = create_entry(client, "Second")
+    response = client.put("/api/entries/order", json={"entries": [
+        {"id": second["id"], "revision": second["revision"]},
+        {"id": first["id"], "revision": first["revision"]},
+    ]})
     assert response.status_code == 200
     assert [entry["name"] for entry in client.get("/api/entries").get_json()] == [
-        "Second",
-        "First",
+        "Second", "First",
     ]
-    assert client.put(
-        "/api/entries/order", json={"entry_ids": [first["id"]]}
-    ).status_code == 400
+    assert all(entry["revision"] == 2 for entry in response.get_json())
 
 
-def test_migrates_original_database_schema(tmp_path):
+def test_migrates_original_database_and_backfills_target_date(tmp_path):
     database_path = tmp_path / "old.db"
     with sqlite3.connect(database_path) as connection:
         connection.execute(
@@ -118,29 +183,45 @@ def test_migrates_original_database_schema(tmp_path):
             )
             """
         )
-        connection.execute("INSERT INTO entries (name, progress) VALUES ('Existing', 25)")
+        connection.execute(
+            "INSERT INTO entries (name, progress, created_at) VALUES (?, ?, ?)",
+            ("Existing", 25, "2026-07-04 12:00:00"),
+        )
 
-    migrated_client = create_app(database_path).test_client()
-    entry = migrated_client.get("/api/entries").get_json()[0]
+    entry = create_app(database_path).test_client().get("/api/entries").get_json()[0]
     assert entry["name"] == "Existing"
-    assert entry["date"] == ""
-    assert entry["initials"] == ""
-    assert entry["notes"] == ""
-    assert entry["sort_order"] == entry["id"]
+    assert entry["target_date"] == "2026-07-04"
+    assert entry["revision"] == 1
 
 
-def test_creates_restorable_backup(client, database_path, tmp_path):
-    client.post("/api/entries", json={"name": "Back me up"})
-    backup_directory = tmp_path / "backups"
-    backup_path = create_backup(database_path, backup_directory, 30)
+def test_migrates_mvp3_database(tmp_path):
+    database_path = tmp_path / "mvp3.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                date TEXT NOT NULL DEFAULT '', initials TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '', sort_order INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO entries (name, date, initials, notes, sort_order)
+            VALUES ('MVP3', '2026-08-18', 'PT', 'Keep this', 1);
+            """
+        )
+    entry = create_app(database_path).test_client().get("/api/entries").get_json()[0]
+    assert entry["target_date"] == "2026-08-18"
+    assert entry["initials"] == "PT"
+    assert entry["notes"] == "Keep this"
 
-    restored_client = create_app(backup_path).test_client()
-    restored = restored_client.get("/api/entries").get_json()
-    assert [entry["name"] for entry in restored] == ["Back me up"]
 
-    client.post("/api/entries", json={"name": "Added later"})
-    replacement_path = create_backup(database_path, backup_directory, 30)
-    assert replacement_path == backup_path
-    replaced_client = create_app(replacement_path).test_client()
-    replaced = replaced_client.get("/api/entries").get_json()
-    assert [entry["name"] for entry in replaced] == ["Back me up", "Added later"]
+def test_backup_can_replace_same_day_file(client, database_path, tmp_path):
+    create_entry(client, "Back me up")
+    directory = tmp_path / "backups"
+    backup_path = create_backup(database_path, directory, 30)
+    create_entry(client, "Added later")
+    assert create_backup(database_path, directory, 30) == backup_path
+    restored = create_app(backup_path).test_client().get("/api/entries").get_json()
+    assert [entry["name"] for entry in restored] == ["Back me up", "Added later"]

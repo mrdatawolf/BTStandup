@@ -1,8 +1,10 @@
 # BT Standup Progress Tracker
 
-A small shared progress tracker for a technical team. Entries support dates,
-owner initials, notes, completion percentages, and drag-and-drop ordering. A Flask
-web server hosts the browser interface and stores everything in a SQLite database.
+A small shared progress tracker for a technical team. Entries support required
+target dates, owner initials, notes, completion percentages, soft deletion,
+change history, filtering, and drag-and-drop ordering. A Flask web server hosts
+the browser interface and stores everything in a SQLite database. Server-Sent
+Events notify connected browsers about changes made by teammates.
 The deployed application version comes from `VERSION.txt` and appears in the page
 footer. Update that file as part of each release.
 
@@ -27,6 +29,8 @@ PORT=8080
 DATABASE_PATH=./data/standup.db
 BACKUP_DIRECTORY=./backups
 BACKUP_RETENTION_DAYS=30
+SERVER_THREADS=32
+SSE_HEARTBEAT_SECONDS=20
 ```
 
 Relative paths are resolved from the project directory. Windows absolute paths,
@@ -40,6 +44,22 @@ scripts\start.bat
 
 The database and its parent directory are created automatically. Team members can
 open `http://SERVER_IP:8080`, replacing `SERVER_IP` with the Windows computer's IP.
+Keep `SERVER_THREADS` comfortably above the maximum number of simultaneously open
+browser tabs because each live-update connection occupies one Waitress thread.
+
+## Database migrations
+
+Numbered SQL migrations live in `migrations`. Applied versions are recorded in
+the database's `schema_migrations` table. The application checks and applies
+pending migrations during startup. They can also be run explicitly with:
+
+```bat
+scripts\migrate.bat
+```
+
+For a production update, stop the application, run `scripts\backup.bat`, deploy
+the new files, run `scripts\migrate.bat`, and then start the application. Existing
+MVP databases are detected and baselined before the new migration is applied.
 
 ## Windows Firewall
 
@@ -96,7 +116,14 @@ API endpoints:
 - `POST /api/entries`
 - `PATCH /api/entries/<id>`
 - `DELETE /api/entries/<id>`
+- `POST /api/entries/<id>/restore`
+- `GET /api/entries/<id>/history`
 - `PUT /api/entries/order`
+- `GET /api/events` (Server-Sent Events)
+
+`GET /api/entries` accepts `target_date_from`, `target_date_to`, `q`, `initials`,
+`deleted`, and `sort` query parameters. Updates, deletion, restoration, and manual
+ordering use entry revisions and return `409 Conflict` for stale browser data.
 
 ## Repository hygiene
 
