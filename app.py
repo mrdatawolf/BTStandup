@@ -1,6 +1,7 @@
 import os
 import re
 import sqlite3
+from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -32,8 +33,15 @@ def connect_database(database_path: Path | None = None) -> sqlite3.Connection:
     return connection
 
 
+@contextmanager
+def open_database(database_path: Path | None = None):
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            yield connection
+
+
 def initialize_database(database_path: Path | None = None) -> None:
-    with connect_database(database_path) as connection:
+    with open_database(database_path) as connection:
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS entries (
@@ -82,8 +90,8 @@ def create_app(database_path: Path | None = None) -> Flask:
     app.config["DATABASE_PATH"] = database_path or get_database_path()
     initialize_database(app.config["DATABASE_PATH"])
 
-    def database() -> sqlite3.Connection:
-        return connect_database(app.config["DATABASE_PATH"])
+    def database():
+        return open_database(app.config["DATABASE_PATH"])
 
     def validate_fields(payload: dict, creating: bool = False):
         allowed = {"name", "progress", "date", "initials", "notes"}

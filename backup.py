@@ -1,5 +1,6 @@
 import os
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -30,8 +31,9 @@ def create_backup(
     temporary = destination.with_suffix(".db.tmp")
 
     try:
-        with sqlite3.connect(source) as source_connection:
-            with sqlite3.connect(temporary) as destination_connection:
+        temporary.unlink(missing_ok=True)
+        with closing(sqlite3.connect(source)) as source_connection:
+            with closing(sqlite3.connect(temporary)) as destination_connection:
                 source_connection.backup(destination_connection)
         temporary.replace(destination)
     finally:

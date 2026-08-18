@@ -21,7 +21,7 @@ def client(database_path: Path):
 
 def test_health_and_empty_list(client):
     assert client.get("/api/health").get_json() == {"status": "ok"}
-    assert client.get("/api/version").get_json() == {"version": "1.0.0"}
+    assert client.get("/api/version").get_json() == {"version": "1.0.1"}
     assert client.get("/api/entries").get_json() == []
 
 
@@ -131,8 +131,16 @@ def test_migrates_original_database_schema(tmp_path):
 
 def test_creates_restorable_backup(client, database_path, tmp_path):
     client.post("/api/entries", json={"name": "Back me up"})
-    backup_path = create_backup(database_path, tmp_path / "backups", 30)
+    backup_directory = tmp_path / "backups"
+    backup_path = create_backup(database_path, backup_directory, 30)
 
     restored_client = create_app(backup_path).test_client()
     restored = restored_client.get("/api/entries").get_json()
     assert [entry["name"] for entry in restored] == ["Back me up"]
+
+    client.post("/api/entries", json={"name": "Added later"})
+    replacement_path = create_backup(database_path, backup_directory, 30)
+    assert replacement_path == backup_path
+    replaced_client = create_app(replacement_path).test_client()
+    replaced = replaced_client.get("/api/entries").get_json()
+    assert [entry["name"] for entry in replaced] == ["Back me up", "Added later"]
