@@ -52,8 +52,33 @@
 
     .filter-grid > label:first-child { grid-column: span 2; }
 
-    .filter-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
+    .filter-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
     .deleted-toggle { display: inline-flex; align-items: center; gap: 7px; color: #4b5563; font-size: 14px; }
+    .view-toggle { display: inline-flex; align-items: center; gap: 8px; color: #4b5563; font-size: 14px; cursor: pointer; }
+    .view-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+    .toggle-slider {
+      position: relative;
+      width: 38px;
+      height: 22px;
+      border-radius: 999px;
+      background: #d1d5db;
+      transition: background 0.2s ease;
+    }
+    .toggle-slider::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 0.2s ease;
+    }
+    .view-toggle input:checked + .toggle-slider { background: #2563eb; }
+    .view-toggle input:checked + .toggle-slider::after { transform: translateX(16px); }
+    .view-toggle input:focus-visible + .toggle-slider { outline: 3px solid #bfdbfe; outline-offset: 2px; }
     .clear-button { background: #e5e7eb; color: #374151; }
     .result-count { color: #6b7280; font-size: 13px; }
 
@@ -94,6 +119,23 @@
       padding: 16px 0;
       border-top: 1px solid #e5e7eb;
     }
+
+    #entries.compact-view {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+      gap: 14px;
+    }
+
+    #entries.compact-view .entry {
+      min-width: 0;
+      padding: 16px;
+      border: 1px solid #dbe3ef;
+      border-radius: 10px;
+      background: #fff;
+    }
+
+    #entries.compact-view .deleted-entry { background: #fafafa; }
+    #entries.compact-view .empty-message { grid-column: 1 / -1; }
 
     .entry.dragging { opacity: 0.45; background: #eff6ff; }
     .entry.drag-over { border-top: 3px solid #2563eb; }
@@ -281,6 +323,11 @@
       </div>
       <div class="filter-actions">
         <label class="deleted-toggle"><input id="deletedInput" type="checkbox" /> View deleted entries</label>
+        <label class="view-toggle">
+          <input id="compactInput" type="checkbox" />
+          <span class="toggle-slider" aria-hidden="true"></span>
+          Compact view
+        </label>
         <span id="resultCount" class="result-count"></span>
         <button id="clearFiltersButton" class="clear-button">Clear filters</button>
       </div>

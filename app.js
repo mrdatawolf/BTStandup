@@ -11,6 +11,7 @@ const dateToInput = document.getElementById("dateToInput");
 const filterInitialsInput = document.getElementById("filterInitialsInput");
 const sortInput = document.getElementById("sortInput");
 const deletedInput = document.getElementById("deletedInput");
+const compactInput = document.getElementById("compactInput");
 const clearFiltersButton = document.getElementById("clearFiltersButton");
 const resultCount = document.getElementById("resultCount");
 
@@ -110,6 +111,7 @@ function filtersFromPage() {
     initials: cleanInitials(filterInitialsInput.value),
     sort: sortInput.value,
     deleted: deletedInput.checked ? "true" : "false",
+    compact: compactInput.checked ? "true" : "false",
   };
 }
 
@@ -117,7 +119,8 @@ function entriesUrl() {
   const values = filtersFromPage();
   const parameters = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
-    if (value && !(key === "sort" && value === "manual") && !(key === "deleted" && value === "false")) {
+    if (value && !(key === "sort" && value === "manual") &&
+        !((key === "deleted" || key === "compact") && value === "false")) {
       parameters.set(key, value);
     }
   });
@@ -137,6 +140,7 @@ function loadFiltersFromUrl() {
     sortInput.value = "manual";
   }
   deletedInput.checked = parameters.get("deleted") === "true";
+  compactInput.checked = parameters.get("compact") === "true";
 }
 
 function manualOrderingEnabled() {
@@ -260,6 +264,7 @@ async function saveOrder() {
 
 function renderEntries() {
   entriesContainer.innerHTML = "";
+  entriesContainer.classList.toggle("compact-view", compactInput.checked);
   resultCount.textContent = `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
   if (!entries.length) {
     const filtered = location.search.length > 0;
@@ -506,7 +511,7 @@ searchInput.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(filtersChanged, 300);
 });
-[dateFromInput, dateToInput, sortInput, deletedInput].forEach(element =>
+[dateFromInput, dateToInput, sortInput, deletedInput, compactInput].forEach(element =>
   element.addEventListener("change", filtersChanged)
 );
 clearFiltersButton.addEventListener("click", () => {
@@ -516,6 +521,7 @@ clearFiltersButton.addEventListener("click", () => {
   filterInitialsInput.value = "";
   sortInput.value = "manual";
   deletedInput.checked = false;
+  compactInput.checked = false;
   filtersChanged();
 });
 addButton.addEventListener("click", addEntry);
