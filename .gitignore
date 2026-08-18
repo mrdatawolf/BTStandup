@@ -11,4 +11,4 @@ backups/*
 !backups/.gitkeep
 data/*
 !data/.gitkeep
-
+Examples/

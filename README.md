@@ -1,7 +1,10 @@
 # BT Standup Progress Tracker
 
-A small shared progress tracker for a technical team. A Flask web server hosts the
-browser interface and stores entries in a SQLite database.
+A small shared progress tracker for a technical team. Entries support dates,
+owner initials, notes, completion percentages, and drag-and-drop ordering. A Flask
+web server hosts the browser interface and stores everything in a SQLite database.
+The deployed application version comes from `VERSION.txt` and appears in the page
+footer. Update that file as part of each release.
 
 ## Windows setup
 
@@ -88,10 +91,12 @@ Install the development dependencies and run the tests:
 API endpoints:
 
 - `GET /api/health`
+- `GET /api/version`
 - `GET /api/entries`
 - `POST /api/entries`
 - `PATCH /api/entries/<id>`
 - `DELETE /api/entries/<id>`
+- `PUT /api/entries/order`
 
 ## Repository hygiene
 

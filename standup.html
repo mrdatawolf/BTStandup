@@ -9,13 +9,14 @@
 
     body {
       margin: 0;
+      padding-bottom: 46px;
       font-family: Arial, sans-serif;
       background: #f4f7fb;
       color: #1f2937;
     }
 
     .app {
-      width: min(700px, calc(100% - 32px));
+      width: min(780px, calc(100% - 32px));
       margin: 48px auto;
       background: white;
       border-radius: 14px;
@@ -23,93 +24,126 @@
       box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
     }
 
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-    }
-
-    .subtitle {
-      margin: 0 0 24px;
-      color: #6b7280;
-    }
+    h1 { margin: 0 0 24px; font-size: 28px; }
 
     .add-row {
-      display: flex;
+      display: grid;
+      grid-template-columns: 1fr 160px 85px auto;
       gap: 10px;
       margin-bottom: 24px;
     }
 
-    input[type="text"] {
-      flex: 1;
-      min-width: 0;
+    input[type="text"], input[type="date"], textarea {
+      width: 100%;
       padding: 12px;
       border: 1px solid #d1d5db;
       border-radius: 8px;
+      font: inherit;
       font-size: 16px;
+      background: white;
+    }
+
+    input.initials-input, input.edit-initials {
+      text-transform: uppercase;
+      text-align: center;
+      font-weight: 700;
+    }
+
+    textarea {
+      min-height: 110px;
+      resize: vertical;
+      line-height: 1.45;
     }
 
     button {
       border: 0;
       border-radius: 8px;
-      padding: 12px 16px;
-      font-size: 15px;
+      padding: 10px 12px;
+      font-size: 14px;
       cursor: pointer;
     }
 
-    .add-button {
-      background: #2563eb;
-      color: white;
-    }
-
-    .add-button:hover {
-      background: #1d4ed8;
-    }
+    .add-button { background: #2563eb; color: white; }
+    .add-button:hover { background: #1d4ed8; }
 
     .entry {
       padding: 16px 0;
       border-top: 1px solid #e5e7eb;
     }
 
+    .entry.dragging { opacity: 0.45; background: #eff6ff; }
+    .entry.drag-over { border-top: 3px solid #2563eb; }
+
     .entry-header {
       display: flex;
-      gap: 12px;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
+      gap: 14px;
       margin-bottom: 10px;
     }
 
-    .entry-name {
-      font-weight: 600;
-      overflow-wrap: anywhere;
-    }
-
-    .delete-button {
-      background: #fee2e2;
-      color: #b91c1c;
-      padding: 8px 10px;
-    }
-
-    .delete-button:hover {
-      background: #fecaca;
-    }
-
-    .progress-row {
+    .entry-top-left {
       display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .drag-handle {
+      width: 28px;
+      height: 32px;
+      display: inline-flex;
       align-items: center;
-      gap: 12px;
+      justify-content: center;
+      border-radius: 7px;
+      color: #6b7280;
+      background: #f3f4f6;
+      font-size: 19px;
+      line-height: 1;
+      letter-spacing: -2px;
+      cursor: grab;
+      user-select: none;
+      flex: 0 0 auto;
     }
 
-    input[type="range"] {
-      flex: 1;
-      accent-color: #2563eb;
+    .drag-handle:hover { background: #e0e7ff; color: #3730a3; }
+    .drag-handle:active { cursor: grabbing; }
+
+    .entry-title { min-width: 0; cursor: pointer; padding-top: 2px; }
+    .entry-title:hover .entry-name { color: #2563eb; text-decoration: underline; }
+    .entry-name { display: block; font-weight: 700; overflow-wrap: anywhere; }
+    .entry-date { display: block; margin-top: 4px; color: #6b7280; font-size: 14px; }
+
+    .entry-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+    .initials-badge {
+      min-width: 38px;
+      height: 30px;
+      padding: 0 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 999px;
+      background: #e0e7ff;
+      color: #3730a3;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      cursor: pointer;
     }
 
-    .percent {
-      width: 48px;
-      text-align: right;
+    .initials-badge.empty {
+      background: #f3f4f6;
+      color: #6b7280;
       font-weight: 600;
-      color: #2563eb;
+      letter-spacing: 0;
     }
+
+    .notes-button { background: #fef3c7; color: #92400e; }
+    .delete-button { background: #fee2e2; color: #b91c1c; }
+
+    .progress-row { display: flex; align-items: center; gap: 12px; }
+    input[type="range"] { flex: 1; accent-color: #2563eb; cursor: pointer; }
+    .percent { width: 48px; text-align: right; font-weight: 700; color: #2563eb; }
 
     .bar-background {
       height: 10px;
@@ -126,199 +160,72 @@
       transition: width 0.2s ease;
     }
 
-    .empty-message {
-      text-align: center;
-      color: #6b7280;
-      padding: 24px 0 8px;
+    .notes-panel {
+      margin-top: 14px;
+      padding: 14px;
+      background: #fffbeb;
+      border: 1px solid #fde68a;
+      border-radius: 10px;
     }
 
-    .status {
-      min-height: 20px;
-      margin: -12px 0 16px;
-      color: #6b7280;
-      font-size: 14px;
+    .notes-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 700; color: #78350f; }
+    .notes-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+    .edit-form {
+      display: grid;
+      grid-template-columns: 1fr 160px 85px auto auto;
+      gap: 8px;
+      align-items: center;
     }
 
+    .save-button { background: #16a34a; color: white; }
+    .cancel-button { background: #e5e7eb; color: #374151; }
+    .empty-message { text-align: center; color: #6b7280; padding: 24px 0 8px; }
+    .status { min-height: 20px; margin: 12px 0 0; color: #6b7280; font-size: 14px; }
     .status.error { color: #b91c1c; }
+    button:disabled, input:disabled, textarea:disabled { cursor: not-allowed; opacity: 0.6; }
 
-    button:disabled, input:disabled {
-      cursor: not-allowed;
-      opacity: 0.6;
+    .footer-bar {
+      position: fixed;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 16px;
+      border-top: 1px solid #d1d5db;
+      background: #ffffff;
+      color: #6b7280;
+      font-size: 13px;
+      box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.04);
     }
 
-    @media (max-width: 500px) {
+    @media (max-width: 680px) {
       .app { margin-top: 20px; padding: 20px; }
-      .add-row { flex-direction: column; }
+      .add-row, .edit-form { grid-template-columns: 1fr; }
+      .entry-header { flex-direction: column; }
+      .entry-actions { justify-content: flex-start; }
     }
   </style>
 </head>
 <body>
   <main class="app">
     <h1>Progress Tracker</h1>
-    <p class="subtitle">Add an item and set its completion percentage.</p>
 
     <div class="add-row">
       <input id="entryInput" type="text" maxlength="500" placeholder="Type a new entry..." />
+      <input id="dateInput" type="date" aria-label="Entry date" />
+      <input id="initialsInput" class="initials-input" type="text" maxlength="5" placeholder="Initials" aria-label="Initials" />
       <button class="add-button" id="addButton">Add entry</button>
     </div>
 
-    <p class="status" id="status" aria-live="polite"></p>
-
     <section id="entries"></section>
+    <p class="status" id="status" aria-live="polite"></p>
   </main>
 
-  <script>
-    const entryInput = document.getElementById("entryInput");
-    const addButton = document.getElementById("addButton");
-    const entriesContainer = document.getElementById("entries");
-
-    const status = document.getElementById("status");
-    let entries = [];
-    const saveTimers = new Map();
-
-    function setStatus(message = "", isError = false) {
-      status.textContent = message;
-      status.classList.toggle("error", isError);
-    }
-
-    async function apiRequest(url, options = {}) {
-      const response = await fetch(url, {
-        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-        ...options,
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        throw new Error(body.error || `Request failed (${response.status})`);
-      }
-      return response.status === 204 ? null : response.json();
-    }
-
-    function renderEntries() {
-      entriesContainer.innerHTML = "";
-
-      if (entries.length === 0) {
-        entriesContainer.innerHTML =
-          '<p class="empty-message">No entries yet. Add one above.</p>';
-        return;
-      }
-
-      entries.forEach((entry) => {
-        const item = document.createElement("div");
-        item.className = "entry";
-
-        item.innerHTML = `
-          <div class="entry-header">
-            <span class="entry-name"></span>
-            <button class="delete-button">Delete</button>
-          </div>
-          <div class="progress-row">
-            <input type="range" min="0" max="100" value="${entry.progress}">
-            <span class="percent">${entry.progress}%</span>
-          </div>
-          <div class="bar-background">
-            <div class="bar-fill" style="width: ${entry.progress}%"></div>
-          </div>
-        `;
-
-        item.querySelector(".entry-name").textContent = entry.name;
-
-        const slider = item.querySelector('input[type="range"]');
-        const percent = item.querySelector(".percent");
-        const fill = item.querySelector(".bar-fill");
-
-        slider.addEventListener("input", () => {
-          entry.progress = Number(slider.value);
-          percent.textContent = `${entry.progress}%`;
-          fill.style.width = `${entry.progress}%`;
-          setStatus("Saving...");
-          clearTimeout(saveTimers.get(entry.id));
-          saveTimers.set(entry.id, setTimeout(() => saveProgress(entry, slider), 350));
-        });
-
-        item.querySelector(".delete-button").addEventListener("click", () =>
-          deleteEntry(entry.id)
-        );
-
-        entriesContainer.appendChild(item);
-      });
-    }
-
-    async function loadEntries() {
-      setStatus("Loading...");
-      try {
-        entries = await apiRequest("/api/entries");
-        renderEntries();
-        setStatus();
-      } catch (error) {
-        setStatus(`Could not load entries: ${error.message}`, true);
-      }
-    }
-
-    async function saveProgress(entry, slider) {
-      slider.disabled = true;
-      try {
-        const saved = await apiRequest(`/api/entries/${entry.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ progress: entry.progress }),
-        });
-        Object.assign(entry, saved);
-        setStatus("Saved.");
-        setTimeout(() => {
-          if (status.textContent === "Saved.") setStatus();
-        }, 1200);
-      } catch (error) {
-        setStatus(`Could not save: ${error.message}`, true);
-      } finally {
-        slider.disabled = false;
-        saveTimers.delete(entry.id);
-      }
-    }
-
-    async function deleteEntry(id) {
-      clearTimeout(saveTimers.get(id));
-      setStatus("Deleting...");
-      try {
-        await apiRequest(`/api/entries/${id}`, { method: "DELETE" });
-        entries = entries.filter((entry) => entry.id !== id);
-        renderEntries();
-        setStatus();
-      } catch (error) {
-        setStatus(`Could not delete: ${error.message}`, true);
-      }
-    }
-
-    async function addEntry() {
-      const name = entryInput.value.trim();
-      if (!name) return;
-
-      addButton.disabled = true;
-      entryInput.disabled = true;
-      setStatus("Adding...");
-      try {
-        const entry = await apiRequest("/api/entries", {
-          method: "POST",
-          body: JSON.stringify({ name }),
-        });
-        entries.push(entry);
-        entryInput.value = "";
-        renderEntries();
-        setStatus();
-      } catch (error) {
-        setStatus(`Could not add entry: ${error.message}`, true);
-      } finally {
-        addButton.disabled = false;
-        entryInput.disabled = false;
-        entryInput.focus();
-      }
-    }
-
-    addButton.addEventListener("click", addEntry);
-
-    entryInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") addEntry();
-    });
-
-    loadEntries();
-  </script>
+  <footer class="footer-bar">BT Standup&nbsp;·&nbsp;Version&nbsp;<span id="appVersion">...</span></footer>
+  <script src="/app.js"></script>
 </body>
 </html>
