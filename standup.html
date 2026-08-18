@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Progress Tracker</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f4f7fb;
+      color: #1f2937;
+    }
+
+    .app {
+      width: min(700px, calc(100% - 32px));
+      margin: 48px auto;
+      background: white;
+      border-radius: 14px;
+      padding: 28px;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      margin: 0 0 24px;
+      color: #6b7280;
+    }
+
+    .add-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
+    input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      padding: 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 15px;
+      cursor: pointer;
+    }
+
+    .add-button {
+      background: #2563eb;
+      color: white;
+    }
+
+    .add-button:hover {
+      background: #1d4ed8;
+    }
+
+    .entry {
+      padding: 16px 0;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .entry-header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .entry-name {
+      font-weight: 600;
+      overflow-wrap: anywhere;
+    }
+
+    .delete-button {
+      background: #fee2e2;
+      color: #b91c1c;
+      padding: 8px 10px;
+    }
+
+    .delete-button:hover {
+      background: #fecaca;
+    }
+
+    .progress-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    input[type="range"] {
+      flex: 1;
+      accent-color: #2563eb;
+    }
+
+    .percent {
+      width: 48px;
+      text-align: right;
+      font-weight: 600;
+      color: #2563eb;
+    }
+
+    .bar-background {
+      height: 10px;
+      background: #e5e7eb;
+      border-radius: 999px;
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #60a5fa);
+      border-radius: inherit;
+      transition: width 0.2s ease;
+    }
+
+    .empty-message {
+      text-align: center;
+      color: #6b7280;
+      padding: 24px 0 8px;
+    }
+
+    .status {
+      min-height: 20px;
+      margin: -12px 0 16px;
+      color: #6b7280;
+      font-size: 14px;
+    }
+
+    .status.error { color: #b91c1c; }
+
+    button:disabled, input:disabled {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    @media (max-width: 500px) {
+      .app { margin-top: 20px; padding: 20px; }
+      .add-row { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <h1>Progress Tracker</h1>
+    <p class="subtitle">Add an item and set its completion percentage.</p>
+
+    <div class="add-row">
+      <input id="entryInput" type="text" maxlength="500" placeholder="Type a new entry..." />
+      <button class="add-button" id="addButton">Add entry</button>
+    </div>
+
+    <p class="status" id="status" aria-live="polite"></p>
+
+    <section id="entries"></section>
+  </main>
+
+  <script>
+    const entryInput = document.getElementById("entryInput");
+    const addButton = document.getElementById("addButton");
+    const entriesContainer = document.getElementById("entries");
+
+    const status = document.getElementById("status");
+    let entries = [];
+    const saveTimers = new Map();
+
+    function setStatus(message = "", isError = false) {
+      status.textContent = message;
+      status.classList.toggle("error", isError);
+    }
+
+    async function apiRequest(url, options = {}) {
+      const response = await fetch(url, {
+        headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+        ...options,
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `Request failed (${response.status})`);
+      }
+      return response.status === 204 ? null : response.json();
+    }
+
+    function renderEntries() {
+      entriesContainer.innerHTML = "";
+
+      if (entries.length === 0) {
+        entriesContainer.innerHTML =
+          '<p class="empty-message">No entries yet. Add one above.</p>';
+        return;
+      }
+
+      entries.forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = "entry";
+
+        item.innerHTML = `
+          <div class="entry-header">
+            <span class="entry-name"></span>
+            <button class="delete-button">Delete</button>
+          </div>
+          <div class="progress-row">
+            <input type="range" min="0" max="100" value="${entry.progress}">
+            <span class="percent">${entry.progress}%</span>
+          </div>
+          <div class="bar-background">
+            <div class="bar-fill" style="width: ${entry.progress}%"></div>
+          </div>
+        `;
+
+        item.querySelector(".entry-name").textContent = entry.name;
+
+        const slider = item.querySelector('input[type="range"]');
+        const percent = item.querySelector(".percent");
+        const fill = item.querySelector(".bar-fill");
+
+        slider.addEventListener("input", () => {
+          entry.progress = Number(slider.value);
+          percent.textContent = `${entry.progress}%`;
+          fill.style.width = `${entry.progress}%`;
+          setStatus("Saving...");
+          clearTimeout(saveTimers.get(entry.id));
+          saveTimers.set(entry.id, setTimeout(() => saveProgress(entry, slider), 350));
+        });
+
+        item.querySelector(".delete-button").addEventListener("click", () =>
+          deleteEntry(entry.id)
+        );
+
+        entriesContainer.appendChild(item);
+      });
+    }
+
+    async function loadEntries() {
+      setStatus("Loading...");
+      try {
+        entries = await apiRequest("/api/entries");
+        renderEntries();
+        setStatus();
+      } catch (error) {
+        setStatus(`Could not load entries: ${error.message}`, true);
+      }
+    }
+
+    async function saveProgress(entry, slider) {
+      slider.disabled = true;
+      try {
+        const saved = await apiRequest(`/api/entries/${entry.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ progress: entry.progress }),
+        });
+        Object.assign(entry, saved);
+        setStatus("Saved.");
+        setTimeout(() => {
+          if (status.textContent === "Saved.") setStatus();
+        }, 1200);
+      } catch (error) {
+        setStatus(`Could not save: ${error.message}`, true);
+      } finally {
+        slider.disabled = false;
+        saveTimers.delete(entry.id);
+      }
+    }
+
+    async function deleteEntry(id) {
+      clearTimeout(saveTimers.get(id));
+      setStatus("Deleting...");
+      try {
+        await apiRequest(`/api/entries/${id}`, { method: "DELETE" });
+        entries = entries.filter((entry) => entry.id !== id);
+        renderEntries();
+        setStatus();
+      } catch (error) {
+        setStatus(`Could not delete: ${error.message}`, true);
+      }
+    }
+
+    async function addEntry() {
+      const name = entryInput.value.trim();
+      if (!name) return;
+
+      addButton.disabled = true;
+      entryInput.disabled = true;
+      setStatus("Adding...");
+      try {
+        const entry = await apiRequest("/api/entries", {
+          method: "POST",
+          body: JSON.stringify({ name }),
+        });
+        entries.push(entry);
+        entryInput.value = "";
+        renderEntries();
+        setStatus();
+      } catch (error) {
+        setStatus(`Could not add entry: ${error.message}`, true);
+      } finally {
+        addButton.disabled = false;
+        entryInput.disabled = false;
+        entryInput.focus();
+      }
+    }
+
+    addButton.addEventListener("click", addEntry);
+
+    entryInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") addEntry();
+    });
+
+    loadEntries();
+  </script>
+</body>
+</html>
