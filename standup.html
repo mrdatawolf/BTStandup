@@ -16,7 +16,7 @@
     }
 
     .app {
-      width: min(780px, calc(100% - 32px));
+      width: 90%;
       margin: 48px auto;
       background: white;
       border-radius: 14px;
@@ -45,10 +45,12 @@
 
     .filter-grid {
       display: grid;
-      grid-template-columns: minmax(180px, 2fr) repeat(2, 145px) 85px 165px;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
       gap: 10px;
       align-items: end;
     }
+
+    .filter-grid > label:first-child { grid-column: span 2; }
 
     .filter-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
     .deleted-toggle { display: inline-flex; align-items: center; gap: 7px; color: #4b5563; font-size: 14px; }
@@ -242,8 +244,9 @@
     }
 
     @media (max-width: 680px) {
-      .app { margin-top: 20px; padding: 20px; }
+      .app { width: calc(100% - 24px); margin-top: 20px; padding: 20px; }
       .add-row, .edit-form, .filter-grid { grid-template-columns: 1fr; }
+      .filter-grid > label:first-child { grid-column: auto; }
       .entry-header { flex-direction: column; }
       .entry-actions { justify-content: flex-start; }
     }
