@@ -23,6 +23,8 @@ def detect_existing_version(connection: sqlite3.Connection) -> int:
     if not table:
         return 0
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(entries)")}
+    if {"external_system", "external_project_id", "external_progress"}.issubset(columns):
+        return 4
     if {"target_date", "revision", "deleted_at"}.issubset(columns):
         return 3
     if {"date", "initials", "notes", "sort_order"}.issubset(columns):

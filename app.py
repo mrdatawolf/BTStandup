@@ -2,26 +2,31 @@ import json
 import os
 import re
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import closing, contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
-from app_config import BASE_DIR, connect_database, get_database_path
+from app_config import BASE_DIR, connect_database, get_biztech_projects_config, get_database_path
 from migrate import run_migrations
 
 
 ENTRY_COLUMNS = (
     "id, name, progress, target_date, initials, notes, sort_order, revision, "
-    "deleted_at, created_at, updated_at"
+    "deleted_at, created_at, updated_at, external_system, external_project_id, "
+    "external_project_title, external_project_url, external_progress, external_status, "
+    "external_synced_at, external_sync_error"
 )
 SORT_OPTIONS = {
     "manual": "sort_order ASC, id ASC",
     "target_date_asc": "target_date ASC, id ASC",
     "target_date_desc": "target_date DESC, id DESC",
-    "progress_asc": "progress ASC, target_date ASC, id ASC",
-    "progress_desc": "progress DESC, target_date ASC, id ASC",
+    "progress_asc": "COALESCE(external_progress, progress) ASC, target_date ASC, id ASC",
+    "progress_desc": "COALESCE(external_progress, progress) DESC, target_date ASC, id ASC",
     "initials_asc": "initials COLLATE NOCASE ASC, target_date ASC, id ASC",
     "recent": "updated_at DESC, id DESC",
 }
@@ -39,10 +44,58 @@ def utc_now() -> str:
 
 
 def entry_to_dict(row) -> dict:
-    return {column: row[column] for column in (
+    entry = {column: row[column] for column in (
         "id", "name", "progress", "target_date", "initials", "notes",
         "sort_order", "revision", "deleted_at", "created_at", "updated_at",
+        "external_system", "external_project_id", "external_project_title",
+        "external_project_url", "external_progress", "external_status",
+        "external_synced_at", "external_sync_error",
     )}
+    entry["manual_progress"] = entry["progress"]
+    if entry["external_system"] and entry["external_progress"] is not None:
+        entry["progress"] = entry["external_progress"]
+    return entry
+
+
+class BiztechProjectsError(Exception):
+    pass
+
+
+def fetch_biztech_json(config: dict, path: str):
+    if not config["base_url"] or not config["token"]:
+        raise BiztechProjectsError("BiztechProjects integration is not configured.")
+    request_object = urllib.request.Request(
+        f'{config["base_url"]}{path}',
+        headers={"Authorization": f'Bearer {config["token"]}', "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request_object, timeout=config["timeout"]) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise BiztechProjectsError("BiztechProjects project was not found.") from error
+        if error.code in (401, 403):
+            raise BiztechProjectsError("BiztechProjects rejected the integration token.") from error
+        raise BiztechProjectsError(f"BiztechProjects returned HTTP {error.code}.") from error
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise BiztechProjectsError("BiztechProjects is currently unavailable.") from error
+
+
+def validate_project_summary(value):
+    if not isinstance(value, dict):
+        raise BiztechProjectsError("BiztechProjects returned an invalid project summary.")
+    project_id = value.get("id")
+    progress = value.get("progress")
+    web_url = value.get("web_url")
+    parsed_url = urllib.parse.urlparse(web_url) if isinstance(web_url, str) else None
+    if (isinstance(project_id, bool) or not isinstance(project_id, int)
+            or isinstance(progress, bool) or not isinstance(progress, int)
+            or not 0 <= progress <= 100
+            or not isinstance(value.get("title"), str)
+            or not parsed_url or parsed_url.scheme not in {"http", "https"}
+            or not parsed_url.netloc):
+        raise BiztechProjectsError("BiztechProjects returned an invalid project summary.")
+    return value
 
 
 def event_snapshot(entry: dict | None, fields: list[str]) -> dict | None:
@@ -83,6 +136,7 @@ def record_event(
 def create_app(database_path: Path | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["DATABASE_PATH"] = database_path or get_database_path()
+    app.config["BIZTECH_PROJECTS"] = get_biztech_projects_config()
     run_migrations(app.config["DATABASE_PATH"])
 
     def database():
@@ -162,6 +216,18 @@ def create_app(database_path: Path | None = None) -> Flask:
             return None, "A valid revision is required."
         return revision, None
 
+    def project_values(summary: dict) -> dict:
+        return {
+            "external_system": "biztech_projects",
+            "external_project_id": summary["id"],
+            "external_project_title": summary["title"][:500],
+            "external_project_url": summary["web_url"][:2000],
+            "external_progress": summary["progress"],
+            "external_status": str(summary.get("status") or "")[:100],
+            "external_synced_at": utc_now(),
+            "external_sync_error": None,
+        }
+
     @app.get("/")
     def index():
         return send_from_directory(BASE_DIR, "standup.html")
@@ -184,6 +250,18 @@ def create_app(database_path: Path | None = None) -> Flask:
         if value.lower().startswith("version="):
             value = value.split("=", 1)[1].strip()
         return jsonify({"version": value})
+
+    @app.get("/api/integrations/biztech-projects/projects")
+    def list_biztech_projects():
+        try:
+            projects = fetch_biztech_json(
+                app.config["BIZTECH_PROJECTS"], "/api/integrations/projects"
+            )
+            if not isinstance(projects, list):
+                raise BiztechProjectsError("BiztechProjects returned an invalid project list.")
+            return jsonify([validate_project_summary(project) for project in projects])
+        except BiztechProjectsError as error:
+            return jsonify({"error": str(error)}), 502
 
     @app.get("/api/entries")
     def list_entries():
@@ -292,6 +370,8 @@ def create_app(database_path: Path | None = None) -> Flask:
                 return jsonify({"error": "Entry not found."}), 404
             if before["revision"] != revision:
                 return conflict_response(before)
+            if "progress" in values and before["external_system"]:
+                return jsonify({"error": "Progress is managed by the linked project."}), 400
             changed = [field for field, value in values.items() if before[field] != value]
             if not changed:
                 return jsonify(before)
@@ -305,6 +385,120 @@ def create_app(database_path: Path | None = None) -> Flask:
             after = fetch_entry(connection, entry_id)
             event_type = "progress_changed" if changed == ["progress"] else "details_changed"
             record_event(connection, entry_id, event_type, changed, before, after, client_id())
+        return jsonify(after)
+
+    @app.post("/api/entries/<int:entry_id>/project-link")
+    def link_project(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+        project_id = payload.get("project_id")
+        if isinstance(project_id, bool) or not isinstance(project_id, int) or project_id < 1:
+            return jsonify({"error": "A valid project_id is required."}), 400
+        try:
+            summary = validate_project_summary(fetch_biztech_json(
+                app.config["BIZTECH_PROJECTS"],
+                f"/api/integrations/projects/{project_id}/summary",
+            ))
+        except BiztechProjectsError as integration_error:
+            return jsonify({"error": str(integration_error)}), 502
+        if summary["id"] != project_id:
+            return jsonify({"error": "BiztechProjects returned the wrong project."}), 502
+
+        values = project_values(summary)
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
+                return jsonify({"error": "Entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+            fields = list(values)
+            assignments = ", ".join(f"{field} = ?" for field in fields)
+            connection.execute(
+                f"UPDATE entries SET {assignments}, revision = revision + 1, updated_at = ? "
+                "WHERE id = ? AND revision = ?",
+                (*(values[field] for field in fields), utc_now(), entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            record_event(connection, entry_id, "project_linked", fields, before, after, client_id())
+        return jsonify(after)
+
+    @app.post("/api/entries/<int:entry_id>/project-refresh")
+    def refresh_project(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+        with database() as connection:
+            before_fetch = fetch_entry(connection, entry_id)
+        if before_fetch is None or before_fetch["deleted_at"] is not None:
+            return jsonify({"error": "Entry not found."}), 404
+        if before_fetch["revision"] != revision:
+            return conflict_response(before_fetch)
+        if before_fetch["external_system"] != "biztech_projects":
+            return jsonify({"error": "Entry is not linked to a BiztechProjects project."}), 400
+        try:
+            summary = validate_project_summary(fetch_biztech_json(
+                app.config["BIZTECH_PROJECTS"],
+                f'/api/integrations/projects/{before_fetch["external_project_id"]}/summary',
+            ))
+        except BiztechProjectsError as integration_error:
+            return jsonify({"error": str(integration_error), "current": before_fetch}), 502
+
+        values = project_values(summary)
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
+                return jsonify({"error": "Entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+            fields = list(values)
+            assignments = ", ".join(f"{field} = ?" for field in fields)
+            connection.execute(
+                f"UPDATE entries SET {assignments}, revision = revision + 1, updated_at = ? "
+                "WHERE id = ? AND revision = ?",
+                (*(values[field] for field in fields), utc_now(), entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            record_event(connection, entry_id, "project_refreshed", fields, before, after, client_id())
+        return jsonify(after)
+
+    @app.delete("/api/entries/<int:entry_id>/project-link")
+    def unlink_project(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+        fields = [
+            "external_system", "external_project_id", "external_project_title",
+            "external_project_url", "external_progress", "external_status",
+            "external_synced_at", "external_sync_error",
+        ]
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
+                return jsonify({"error": "Entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+            if not before["external_system"]:
+                return jsonify({"error": "Entry is not linked to a project."}), 400
+            connection.execute(
+                "UPDATE entries SET progress = ?, external_system = NULL, "
+                "external_project_id = NULL, external_project_title = NULL, "
+                "external_project_url = NULL, external_progress = NULL, external_status = NULL, "
+                "external_synced_at = NULL, external_sync_error = NULL, "
+                "revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
+                (before["progress"], utc_now(), entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            record_event(
+                connection, entry_id, "project_unlinked", ["progress", *fields],
+                before, after, client_id(),
+            )
         return jsonify(after)
 
     @app.delete("/api/entries/<int:entry_id>")

@@ -82,7 +82,7 @@ function formatTimestamp(value) {
 
 function isEditing() {
   return activeRequests > 0 || progressTimers.size > 0 ||
-    Boolean(document.querySelector(".edit-form, .notes-panel"));
+    Boolean(document.querySelector(".edit-form, .notes-panel, .project-panel"));
 }
 
 function finishRequest() {
@@ -165,6 +165,74 @@ async function saveEntry(entry, updates) {
     throw error;
   } finally {
     finishRequest();
+  }
+}
+
+async function showProjectPicker(item, entry) {
+  item.querySelector(".project-panel")?.remove();
+  const panel = document.createElement("div");
+  panel.className = "project-panel";
+  panel.textContent = "Loading BiztechProjects projects...";
+  item.appendChild(panel);
+  try {
+    const projects = await apiRequest("/api/integrations/biztech-projects/projects");
+    panel.innerHTML = `
+      <label class="notes-label">Link to a BiztechProjects project</label>
+      <input class="project-search" type="text" placeholder="Search projects...">
+      <select class="project-select" size="6" aria-label="BiztechProjects project"></select>
+      <div class="notes-actions">
+        <button class="save-button link-selected-project">Link project</button>
+        <button class="cancel-button cancel-project-link">Cancel</button>
+      </div>`;
+    const search = panel.querySelector(".project-search");
+    const select = panel.querySelector(".project-select");
+    const linkButton = panel.querySelector(".link-selected-project");
+    const populate = () => {
+      const query = search.value.trim().toLowerCase();
+      const matches = projects.filter(project =>
+        `${project.title} ${project.status || ""}`.toLowerCase().includes(query)
+      );
+      select.replaceChildren(...matches.map(project => {
+        const option = document.createElement("option");
+        option.value = project.id;
+        option.textContent = `${project.title} — ${project.progress}%${
+          project.status ? ` (${project.status})` : ""
+        }`;
+        return option;
+      }));
+      if (select.options.length) select.selectedIndex = 0;
+      linkButton.disabled = !select.options.length;
+    };
+    populate();
+    search.addEventListener("input", populate);
+    panel.querySelector(".cancel-project-link").addEventListener("click", () => {
+      panel.remove();
+      if (refreshPending) requestRefresh();
+    });
+    linkButton.addEventListener("click", async () => {
+      if (!select.value) return;
+      linkButton.disabled = true;
+      activeRequests++;
+      setStatus("Linking project...");
+      try {
+        const linked = await apiRequest(`/api/entries/${entry.id}/project-link`, {
+          method: "POST",
+          body: JSON.stringify({ project_id: Number(select.value), revision: entry.revision }),
+        });
+        Object.assign(entry, linked);
+        renderEntries();
+        setStatus();
+      } catch (error) {
+        setStatus(error.message, true);
+        linkButton.disabled = false;
+      } finally {
+        finishRequest();
+      }
+    });
+    search.focus();
+  } catch (error) {
+    panel.textContent = `Could not load projects: ${error.message}`;
+    setStatus(error.message, true);
   }
 }
 
@@ -290,6 +358,12 @@ function renderEntries() {
         </div>
         <div class="entry-actions">
           <span class="initials-badge ${entry.initials ? "" : "empty"}"></span>
+          ${!entry.deleted_at && !entry.external_system
+            ? '<button class="link-project-button">Link project</button>' : ""}
+          ${entry.external_system
+            ? '<a class="open-project-link" target="_blank" rel="noopener noreferrer">Open project ↗</a>' : ""}
+          ${!entry.deleted_at && entry.external_system
+            ? '<button class="refresh-project-button">Refresh</button><button class="unlink-project-button">Unlink</button>' : ""}
           <button class="notes-button">${entry.notes ? "Notes" : (entry.deleted_at ? "No notes" : "Add notes")}</button>
           <button class="history-button">History</button>
           ${entry.deleted_at
@@ -298,15 +372,26 @@ function renderEntries() {
         </div>
       </div>
       <div class="progress-row">
-        <input class="progress-slider" type="range" min="0" max="100" value="${entry.progress}" ${entry.deleted_at ? "disabled" : ""}>
+        ${entry.external_system
+          ? '<span class="managed-progress">Managed by BiztechProjects</span>'
+          : `<input class="progress-slider" type="range" min="0" max="100" value="${entry.progress}" ${entry.deleted_at ? "disabled" : ""}>`}
         <span class="percent">${entry.progress}%</span>
       </div>
+      ${entry.external_system ? '<div class="project-meta"><span class="project-title"></span><span class="project-status"></span><span class="project-synced"></span></div>' : ""}
       <div class="bar-background"><div class="bar-fill" style="width: ${entry.progress}%"></div></div>`;
 
     item.querySelector(".entry-name").textContent = entry.name;
     item.querySelector(".entry-date").textContent = `Target: ${formatDate(entry.target_date)}`;
     item.querySelector(".initials-badge").textContent = entry.initials || "Initials";
     item.querySelector(".history-button").addEventListener("click", () => toggleHistory(item, entry));
+    if (entry.external_system) {
+      item.querySelector(".project-title").textContent = entry.external_project_title || "Linked project";
+      item.querySelector(".project-status").textContent = entry.external_status || "Status unavailable";
+      item.querySelector(".project-synced").textContent = entry.external_synced_at
+        ? `Updated ${formatTimestamp(entry.external_synced_at)}` : "Not yet synchronized";
+      const openLink = item.querySelector(".open-project-link");
+      openLink.href = entry.external_project_url;
+    }
 
     const dragHandle = item.querySelector(".drag-handle");
     if (dragHandle) {
@@ -346,7 +431,7 @@ function renderEntries() {
     const slider = item.querySelector(".progress-slider");
     const percent = item.querySelector(".percent");
     const fill = item.querySelector(".bar-fill");
-    slider.addEventListener("input", () => {
+    slider?.addEventListener("input", () => {
       entry.progress = Number(slider.value);
       percent.textContent = `${entry.progress}%`;
       fill.style.width = `${entry.progress}%`;
@@ -385,6 +470,49 @@ function renderEntries() {
         }
       });
     } else {
+      item.querySelector(".link-project-button")?.addEventListener("click", () =>
+        showProjectPicker(item, entry)
+      );
+
+      item.querySelector(".refresh-project-button")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        activeRequests++;
+        setStatus("Refreshing project progress...");
+        try {
+          const refreshed = await apiRequest(`/api/entries/${entry.id}/project-refresh`, {
+            method: "POST", body: JSON.stringify({ revision: entry.revision }),
+          });
+          Object.assign(entry, refreshed);
+          renderEntries();
+          setStatus();
+        } catch (error) {
+          setStatus(error.message, true);
+          event.currentTarget.disabled = false;
+        } finally {
+          finishRequest();
+        }
+      });
+
+      item.querySelector(".unlink-project-button")?.addEventListener("click", async event => {
+        if (!confirm("Unlink this project? The latest project percentage will become editable.")) return;
+        event.currentTarget.disabled = true;
+        activeRequests++;
+        setStatus("Unlinking project...");
+        try {
+          const unlinked = await apiRequest(`/api/entries/${entry.id}/project-link`, {
+            method: "DELETE", body: JSON.stringify({ revision: entry.revision }),
+          });
+          Object.assign(entry, unlinked);
+          renderEntries();
+          setStatus();
+        } catch (error) {
+          setStatus(error.message, true);
+          event.currentTarget.disabled = false;
+        } finally {
+          finishRequest();
+        }
+      });
+
       item.querySelector(".delete-button").addEventListener("click", async event => {
         event.currentTarget.disabled = true;
         activeRequests++;

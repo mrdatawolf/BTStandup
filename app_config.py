@@ -18,6 +18,14 @@ def get_database_path() -> Path:
     return resolve_path(os.getenv("DATABASE_PATH", "./data/standup.db"))
 
 
+def get_biztech_projects_config() -> dict:
+    return {
+        "base_url": os.getenv("BIZTECH_PROJECTS_BASE_URL", "").strip().rstrip("/"),
+        "token": os.getenv("BIZTECH_PROJECTS_TOKEN", "").strip(),
+        "timeout": max(1.0, float(os.getenv("BIZTECH_PROJECTS_TIMEOUT_SECONDS", "5"))),
+    }
+
+
 def connect_database(database_path: Path | None = None) -> sqlite3.Connection:
     path = database_path or get_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)

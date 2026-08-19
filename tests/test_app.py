@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+import app as app_module
 
 from app import create_app
 from backup import create_backup
@@ -28,9 +29,9 @@ def create_entry(client, name="Test", **values):
 
 def test_health_version_and_empty_list(client):
     assert client.get("/api/health").get_json() == {
-        "status": "ok", "schema_version": 3,
+        "status": "ok", "schema_version": 4,
     }
-    assert client.get("/api/version").get_json() == {"version": "1.1.0"}
+    assert client.get("/api/version").get_json() == {"version": "1.1.2"}
     assert client.get("/api/entries").get_json() == []
 
 
@@ -153,6 +154,83 @@ def test_rejects_invalid_progress(client, progress):
         json={"progress": progress, "revision": created["revision"]},
     )
     assert response.status_code == 400
+
+
+def project_summary(project_id=5, progress=42):
+    return {
+        "id": project_id, "title": "Client Site", "status": "In Progress",
+        "paused": False, "task_total": 24, "task_done": 10,
+        "progress": progress, "updated_at": "2026-08-19T18:30:00Z",
+        "web_url": f"http://projects.test/project.html?id={project_id}",
+    }
+
+
+def test_project_discovery_is_proxied(client, monkeypatch):
+    monkeypatch.setattr(app_module, "fetch_biztech_json", lambda config, path: [project_summary()])
+    response = client.get("/api/integrations/biztech-projects/projects")
+    assert response.status_code == 200
+    assert response.get_json()[0]["progress"] == 42
+
+
+def test_project_discovery_rejects_unsafe_url(client, monkeypatch):
+    unsafe = project_summary()
+    unsafe["web_url"] = "javascript:alert(1)"
+    monkeypatch.setattr(app_module, "fetch_biztech_json", lambda config, path: [unsafe])
+    response = client.get("/api/integrations/biztech-projects/projects")
+    assert response.status_code == 502
+    assert "invalid project summary" in response.get_json()["error"]
+
+
+def test_link_refresh_and_unlink_project(client, monkeypatch):
+    current = project_summary()
+    monkeypatch.setattr(app_module, "fetch_biztech_json", lambda config, path: current.copy())
+    created = create_entry(client, "Management rollup", progress=15)
+
+    linked_response = client.post(
+        f"/api/entries/{created['id']}/project-link",
+        json={"project_id": 5, "revision": created["revision"]},
+    )
+    assert linked_response.status_code == 200
+    linked = linked_response.get_json()
+    assert linked["external_project_id"] == 5
+    assert linked["progress"] == 42
+    assert linked["manual_progress"] == 15
+    assert client.patch(
+        f"/api/entries/{created['id']}",
+        json={"progress": 75, "revision": linked["revision"]},
+    ).status_code == 400
+
+    current["progress"] = 75
+    refreshed = client.post(
+        f"/api/entries/{created['id']}/project-refresh",
+        json={"revision": linked["revision"]},
+    ).get_json()
+    assert refreshed["progress"] == 75
+
+    unlinked = client.delete(
+        f"/api/entries/{created['id']}/project-link",
+        json={"revision": refreshed["revision"]},
+    ).get_json()
+    assert unlinked["external_project_id"] is None
+    assert unlinked["progress"] == 75
+    assert [event["event_type"] for event in client.get(
+        f"/api/entries/{created['id']}/history"
+    ).get_json()[:3]] == ["project_unlinked", "project_refreshed", "project_linked"]
+
+
+def test_project_link_rejects_stale_revision(client, monkeypatch):
+    monkeypatch.setattr(app_module, "fetch_biztech_json", lambda config, path: project_summary())
+    created = create_entry(client)
+    updated = client.patch(
+        f"/api/entries/{created['id']}",
+        json={"notes": "changed", "revision": created["revision"]},
+    ).get_json()
+    response = client.post(
+        f"/api/entries/{created['id']}/project-link",
+        json={"project_id": 5, "revision": created["revision"]},
+    )
+    assert response.status_code == 409
+    assert response.get_json()["current"]["revision"] == updated["revision"]
 
 
 def test_reorders_entries_with_revisions(client):
