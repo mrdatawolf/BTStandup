@@ -5,6 +5,9 @@ target dates, owner initials, notes, completion percentages, soft deletion,
 change history, filtering, and drag-and-drop ordering. A Flask web server hosts
 the browser interface and stores everything in a SQLite database. Server-Sent
 Events notify connected browsers about changes made by teammates.
+Entries can also link to a BiztechProjects project. Configure
+`BIZTECH_PROJECTS_BASE_URL` and `BIZTECH_PROJECTS_TOKEN` in `.env`; linked
+entries use that project's task-completion percentage instead of local progress.
 The deployed application version comes from `VERSION.txt` and appears in the page
 footer. Update that file as part of each release.
 
