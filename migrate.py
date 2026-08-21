@@ -22,7 +22,15 @@ def detect_existing_version(connection: sqlite3.Connection) -> int:
     ).fetchone()
     if not table:
         return 0
+    def has_table(name: str) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone() is not None
+
     columns = {row["name"] for row in connection.execute("PRAGMA table_info(entries)")}
+    if (has_table("schedule_deferrals")
+            and {"external_system", "external_project_id", "external_progress"}.issubset(columns)):
+        return 5
     if {"external_system", "external_project_id", "external_progress"}.issubset(columns):
         return 4
     if {"target_date", "revision", "deleted_at"}.issubset(columns):

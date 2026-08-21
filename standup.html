@@ -207,6 +207,8 @@
     .notes-button { background: #fef3c7; color: #92400e; }
     .delete-button { background: #fee2e2; color: #b91c1c; }
     .history-button { background: #e0f2fe; color: #075985; }
+    .defer-week-button { background: #ffedd5; color: #9a3412; }
+    .add-issue-button { background: #dcfce7; color: #166534; font-weight: 700; }
     .restore-button { background: #dcfce7; color: #166534; }
     .link-project-button, .refresh-project-button { background: #ede9fe; color: #5b21b6; }
     .unlink-project-button { background: #f3f4f6; color: #4b5563; }
@@ -312,6 +314,38 @@
       box-shadow: 0 -3px 12px rgba(0, 0, 0, 0.04);
     }
 
+    .completion-dialog {
+      width: min(520px, calc(100% - 32px));
+      padding: 0;
+      border: 0;
+      border-radius: 14px;
+      box-shadow: 0 24px 70px rgba(15, 23, 42, 0.3);
+    }
+    .completion-dialog::backdrop { background: rgba(15, 23, 42, 0.55); }
+    .completion-dialog-content { padding: 24px; }
+    .completion-dialog h2 { margin: 0 0 8px; }
+    .completion-dialog p { margin: 0 0 18px; color: #4b5563; }
+    .completion-title-row { display: flex; gap: 8px; }
+    .completion-title-row input { flex: 1; min-width: 0; }
+    .completion-dialog-actions {
+      display: flex;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 20px;
+    }
+    .issue-button {
+      display: inline-flex;
+      align-items: center;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #2563eb;
+      color: white;
+      font-size: 14px;
+      text-decoration: none;
+    }
+    .issue-button.unavailable { display: none; }
+
     @media (max-width: 680px) {
       .app { width: calc(100% - 24px); margin-top: 20px; padding: 20px; }
       .add-row, .edit-form, .filter-grid { grid-template-columns: 1fr; }
@@ -363,6 +397,22 @@
     <section id="entries"></section>
     <p class="status" id="status" aria-live="polite"></p>
   </main>
+
+  <dialog id="completionDialog" class="completion-dialog">
+    <div class="completion-dialog-content">
+      <h2>Entry complete</h2>
+      <p>Use this title to create a follow-up issue.</p>
+      <label for="completionTitle" class="field-label">Issue title</label>
+      <div class="completion-title-row">
+        <input id="completionTitle" type="text" readonly />
+        <button id="copyCompletionTitle" type="button">Copy</button>
+      </div>
+      <div class="completion-dialog-actions">
+        <button id="closeCompletionDialog" type="button">Not now</button>
+        <a id="openIssueForm" class="issue-button unavailable" target="_blank" rel="noopener noreferrer">Open issue form ↗</a>
+      </div>
+    </div>
+  </dialog>
 
   <footer class="footer-bar">BT Standup&nbsp;·&nbsp;Version&nbsp;<span id="appVersion">...</span></footer>
   <script src="/app.js"></script>

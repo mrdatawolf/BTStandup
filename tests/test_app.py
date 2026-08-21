@@ -29,10 +29,23 @@ def create_entry(client, name="Test", **values):
 
 def test_health_version_and_empty_list(client):
     assert client.get("/api/health").get_json() == {
-        "status": "ok", "schema_version": 4,
+        "status": "ok", "schema_version": 5,
     }
     assert client.get("/api/version").get_json() == {"version": "1.1.2"}
+    assert client.get("/api/config").get_json() == {"issue_create_url": ""}
     assert client.get("/api/entries").get_json() == []
+
+
+@pytest.mark.parametrize(("configured", "exposed"), [
+    ("https://issues.example.test/new", "https://issues.example.test/new"),
+    ("javascript:alert(1)", ""),
+])
+def test_browser_config_only_exposes_safe_issue_url(database_path, monkeypatch, configured, exposed):
+    monkeypatch.setattr(app_module, "get_issue_create_url", lambda: configured)
+    configured_client = create_app(database_path).test_client()
+    assert configured_client.get("/api/config").get_json() == {
+        "issue_create_url": exposed,
+    }
 
 
 def test_create_defaults_target_date_and_records_history(client):
@@ -77,6 +90,50 @@ def test_stale_update_returns_conflict(client):
     )
     assert response.status_code == 409
     assert response.get_json()["current"]["revision"] == first["revision"]
+
+
+def test_defer_week_tracks_reporting_snapshot_and_history(client):
+    created = create_entry(
+        client, "OPS - Replace expiring certificate",
+        target_date="2026-08-21", initials="PT",
+    )
+    response = client.post(
+        f"/api/entries/{created['id']}/defer-week",
+        json={"revision": created["revision"]},
+        headers={"X-Client-ID": "test-browser"},
+    )
+    assert response.status_code == 200
+    deferred = response.get_json()
+    assert deferred["target_date"] == "2026-08-28"
+    assert deferred["revision"] == 2
+
+    records = client.get("/api/schedule-deferrals").get_json()
+    assert records[0] == {
+        "id": 1,
+        "entry_id": created["id"],
+        "entry_name": "OPS - Replace expiring certificate",
+        "assignee_initials": "PT",
+        "title_abbreviation": "OPS",
+        "previous_target_date": "2026-08-21",
+        "new_target_date": "2026-08-28",
+        "deferred_days": 7,
+        "client_id": "test-browser",
+        "occurred_at": records[0]["occurred_at"],
+    }
+    history = client.get(f"/api/entries/{created['id']}/history").get_json()
+    assert history[0]["event_type"] == "target_deferred_one_week"
+    assert history[0]["before"]["target_date"] == "2026-08-21"
+    assert history[0]["after"]["target_date"] == "2026-08-28"
+
+
+def test_defer_week_without_title_prefix_records_null_abbreviation(client):
+    created = create_entry(client, "Plain title", target_date="2024-02-25")
+    response = client.post(
+        f"/api/entries/{created['id']}/defer-week",
+        json={"revision": created["revision"]},
+    )
+    assert response.get_json()["target_date"] == "2024-03-03"
+    assert client.get("/api/schedule-deferrals").get_json()[0]["title_abbreviation"] is None
 
 
 def test_soft_delete_restore_and_history(client):

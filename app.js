@@ -14,6 +14,11 @@ const deletedInput = document.getElementById("deletedInput");
 const compactInput = document.getElementById("compactInput");
 const clearFiltersButton = document.getElementById("clearFiltersButton");
 const resultCount = document.getElementById("resultCount");
+const completionDialog = document.getElementById("completionDialog");
+const completionTitle = document.getElementById("completionTitle");
+const copyCompletionTitle = document.getElementById("copyCompletionTitle");
+const closeCompletionDialog = document.getElementById("closeCompletionDialog");
+const openIssueForm = document.getElementById("openIssueForm");
 
 const clientIdKey = "btStandupClientId";
 let clientId = localStorage.getItem(clientIdKey);
@@ -29,6 +34,7 @@ let refreshPending = false;
 let refreshTimer = null;
 let searchTimer = null;
 const progressTimers = new Map();
+let issueCreateUrl = "";
 
 class ApiError extends Error {
   constructor(message, status, body) {
@@ -78,6 +84,30 @@ function formatDate(value) {
 
 function formatTimestamp(value) {
   return new Date(value).toLocaleString();
+}
+
+function showCompletionDialog(entry) {
+  completionTitle.value = entry.name;
+  copyCompletionTitle.textContent = "Copy";
+  openIssueForm.classList.toggle("unavailable", !issueCreateUrl);
+  if (issueCreateUrl) openIssueForm.href = issueCreateUrl;
+  completionDialog.showModal();
+}
+
+async function copyIssueTitle() {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(completionTitle.value);
+    } else {
+      completionTitle.select();
+      document.execCommand("copy");
+      completionTitle.setSelectionRange(0, 0);
+    }
+    copyCompletionTitle.textContent = "Copied";
+  } catch {
+    completionTitle.select();
+    setStatus("Copy failed; press Ctrl+C to copy the selected title.", true);
+  }
 }
 
 function isEditing() {
@@ -364,6 +394,9 @@ function renderEntries() {
             ? '<a class="open-project-link" target="_blank" rel="noopener noreferrer">Open project ↗</a>' : ""}
           ${!entry.deleted_at && entry.external_system
             ? '<button class="refresh-project-button">Refresh</button><button class="unlink-project-button">Unlink</button>' : ""}
+          ${!entry.deleted_at ? '<button class="defer-week-button" title="Move target date out seven days">+1 week</button>' : ""}
+          ${!entry.deleted_at && entry.progress === 100
+            ? '<button class="add-issue-button">Add issue</button>' : ""}
           <button class="notes-button">${entry.notes ? "Notes" : (entry.deleted_at ? "No notes" : "Add notes")}</button>
           <button class="history-button">History</button>
           ${entry.deleted_at
@@ -441,6 +474,7 @@ function renderEntries() {
         try {
           await saveEntry(entry, { progress: entry.progress });
           setStatus();
+          renderEntries();
         } catch (error) {
           setStatus(error.message, true);
         } finally {
@@ -470,6 +504,29 @@ function renderEntries() {
         }
       });
     } else {
+      item.querySelector(".add-issue-button")?.addEventListener("click", () =>
+        showCompletionDialog(entry)
+      );
+
+      item.querySelector(".defer-week-button").addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        activeRequests++;
+        setStatus("Moving target date out one week...");
+        try {
+          const deferred = await apiRequest(`/api/entries/${entry.id}/defer-week`, {
+            method: "POST", body: JSON.stringify({ revision: entry.revision }),
+          });
+          Object.assign(entry, deferred);
+          renderEntries();
+          setStatus("Target date moved out one week.");
+        } catch (error) {
+          setStatus(error.message, true);
+          event.currentTarget.disabled = false;
+        } finally {
+          finishRequest();
+        }
+      });
+
       item.querySelector(".link-project-button")?.addEventListener("click", () =>
         showProjectPicker(item, entry)
       );
@@ -656,10 +713,19 @@ addButton.addEventListener("click", addEntry);
 entryInput.addEventListener("keydown", event => {
   if (event.key === "Enter") addEntry();
 });
+copyCompletionTitle.addEventListener("click", copyIssueTitle);
+closeCompletionDialog.addEventListener("click", () => completionDialog.close());
+openIssueForm.addEventListener("click", () => completionDialog.close());
+completionDialog.addEventListener("click", event => {
+  if (event.target === completionDialog) completionDialog.close();
+});
 
 apiRequest("/api/version")
   .then(result => appVersion.textContent = result.version || "unknown")
   .catch(() => appVersion.textContent = "unknown");
+apiRequest("/api/config")
+  .then(config => issueCreateUrl = config.issue_create_url || "")
+  .catch(() => issueCreateUrl = "");
 loadEntries();
 
 const eventSource = new EventSource("/api/events");

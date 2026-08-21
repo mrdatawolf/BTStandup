@@ -6,12 +6,15 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from contextlib import closing, contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
-from app_config import BASE_DIR, connect_database, get_biztech_projects_config, get_database_path
+from app_config import (
+    BASE_DIR, connect_database, get_biztech_projects_config, get_database_path,
+    get_issue_create_url,
+)
 from migrate import run_migrations
 
 
@@ -41,6 +44,11 @@ def open_database(database_path: Path | None = None):
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def title_abbreviation(name: str) -> str | None:
+    match = re.match(r"^\s*(.+?)\s+-\s+\S.*$", name)
+    return match.group(1).strip() if match else None
 
 
 def entry_to_dict(row) -> dict:
@@ -137,6 +145,13 @@ def create_app(database_path: Path | None = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config["DATABASE_PATH"] = database_path or get_database_path()
     app.config["BIZTECH_PROJECTS"] = get_biztech_projects_config()
+    issue_create_url = get_issue_create_url()
+    parsed_issue_url = urllib.parse.urlparse(issue_create_url)
+    app.config["ISSUE_CREATE_URL"] = (
+        issue_create_url
+        if parsed_issue_url.scheme in {"http", "https"} and parsed_issue_url.netloc
+        else ""
+    )
     run_migrations(app.config["DATABASE_PATH"])
 
     def database():
@@ -250,6 +265,10 @@ def create_app(database_path: Path | None = None) -> Flask:
         if value.lower().startswith("version="):
             value = value.split("=", 1)[1].strip()
         return jsonify({"version": value})
+
+    @app.get("/api/config")
+    def browser_config():
+        return jsonify({"issue_create_url": app.config["ISSUE_CREATE_URL"]})
 
     @app.get("/api/integrations/biztech-projects/projects")
     def list_biztech_projects():
@@ -386,6 +405,64 @@ def create_app(database_path: Path | None = None) -> Flask:
             event_type = "progress_changed" if changed == ["progress"] else "details_changed"
             record_event(connection, entry_id, event_type, changed, before, after, client_id())
         return jsonify(after)
+
+    @app.post("/api/entries/<int:entry_id>/defer-week")
+    def defer_entry_week(entry_id: int):
+        payload = request.get_json(silent=True) or {}
+        revision, error = required_revision(payload)
+        if error:
+            return jsonify({"error": error}), 400
+
+        with database() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            before = fetch_entry(connection, entry_id)
+            if before is None or before["deleted_at"] is not None:
+                return jsonify({"error": "Entry not found."}), 404
+            if before["revision"] != revision:
+                return conflict_response(before)
+
+            previous_date = date.fromisoformat(before["target_date"])
+            new_target_date = (previous_date + timedelta(days=7)).isoformat()
+            now = utc_now()
+            connection.execute(
+                "UPDATE entries SET target_date = ?, revision = revision + 1, updated_at = ? "
+                "WHERE id = ? AND revision = ?",
+                (new_target_date, now, entry_id, revision),
+            )
+            after = fetch_entry(connection, entry_id)
+            abbreviation = title_abbreviation(before["name"])
+            connection.execute(
+                """
+                INSERT INTO schedule_deferrals (
+                    entry_id, entry_name, assignee_initials, title_abbreviation,
+                    previous_target_date, new_target_date, deferred_days, client_id,
+                    occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 7, ?, ?)
+                """,
+                (
+                    entry_id, before["name"], before["initials"], abbreviation,
+                    before["target_date"], new_target_date, client_id(), now,
+                ),
+            )
+            record_event(
+                connection, entry_id, "target_deferred_one_week", ["target_date"],
+                before, after, client_id(),
+            )
+        return jsonify(after)
+
+    @app.get("/api/schedule-deferrals")
+    def list_schedule_deferrals():
+        with database() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, entry_id, entry_name, assignee_initials, title_abbreviation,
+                       previous_target_date, new_target_date, deferred_days, client_id,
+                       occurred_at
+                FROM schedule_deferrals
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        return jsonify([dict(row) for row in rows])
 
     @app.post("/api/entries/<int:entry_id>/project-link")
     def link_project(entry_id: int):

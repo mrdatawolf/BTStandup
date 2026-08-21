@@ -8,6 +8,8 @@ Events notify connected browsers about changes made by teammates.
 Entries can also link to a BiztechProjects project. Configure
 `BIZTECH_PROJECTS_BASE_URL` and `BIZTECH_PROJECTS_TOKEN` in `.env`; linked
 entries use that project's task-completion percentage instead of local progress.
+Set `ISSUE_CREATE_URL` to the new-issue page for your issue tracker to offer a
+shortcut and a copyable entry title when an entry reaches 100%.
 The deployed application version comes from `VERSION.txt` and appears in the page
 footer. Update that file as part of each release.
 

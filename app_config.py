@@ -26,6 +26,10 @@ def get_biztech_projects_config() -> dict:
     }
 
 
+def get_issue_create_url() -> str:
+    return os.getenv("ISSUE_CREATE_URL", "").strip()
+
+
 def connect_database(database_path: Path | None = None) -> sqlite3.Connection:
     path = database_path or get_database_path()
     path.parent.mkdir(parents=True, exist_ok=True)
