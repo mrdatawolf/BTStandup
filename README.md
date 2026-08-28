@@ -128,8 +128,10 @@ API endpoints:
 - `GET /api/events` (Server-Sent Events)
 
 `GET /api/entries` accepts `target_date_from`, `target_date_to`, `q`, `initials`,
-`deleted`, and `sort` query parameters. Updates, deletion, restoration, and manual
-ordering use entry revisions and return `409 Conflict` for stale browser data.
+`deleted`, `tbd`, and `sort` query parameters. Target dates are optional; entries
+without one are "TBD" and are excluded by default unless `tbd=true` is passed.
+Updates, deletion, restoration, and manual ordering use entry revisions and return
+`409 Conflict` for stale browser data.
 
 ## Repository hygiene
 
