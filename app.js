@@ -12,6 +12,9 @@ const filterInitialsInput = document.getElementById("filterInitialsInput");
 const sortInput = document.getElementById("sortInput");
 const deletedInput = document.getElementById("deletedInput");
 const compactInput = document.getElementById("compactInput");
+const tbdInput = document.getElementById("tbdInput");
+const kioskInput = document.getElementById("kioskInput");
+const themeInput = document.getElementById("themeInput");
 const clearFiltersButton = document.getElementById("clearFiltersButton");
 const resultCount = document.getElementById("resultCount");
 const completionDialog = document.getElementById("completionDialog");
@@ -25,6 +28,21 @@ let clientId = localStorage.getItem(clientIdKey);
 if (!clientId) {
   clientId = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
   localStorage.setItem(clientIdKey, clientId);
+}
+
+const kioskModeKey = "btStandupKioskMode";
+const themeKey = "btStandupTheme";
+
+function isKioskMode() {
+  return document.body.classList.contains("kiosk-mode");
+}
+
+function applyKioskMode(enabled) {
+  document.body.classList.toggle("kiosk-mode", enabled);
+}
+
+function applyTheme(isDark) {
+  document.documentElement.classList.toggle("dark-mode", isDark);
 }
 
 let entries = [];
@@ -42,12 +60,6 @@ class ApiError extends Error {
     this.status = status;
     this.body = body;
   }
-}
-
-function localToday() {
-  const now = new Date();
-  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 10);
 }
 
 function setStatus(message = "", isError = false) {
@@ -76,6 +88,7 @@ function cleanInitials(value) {
 }
 
 function formatDate(value) {
+  if (!value) return "TBD";
   const [year, month, day] = value.split("-");
   return new Date(year, Number(month) - 1, day).toLocaleDateString(undefined, {
     year: "numeric", month: "short", day: "numeric",
@@ -146,6 +159,7 @@ function filtersFromPage() {
     sort: sortInput.value,
     deleted: deletedInput.checked ? "true" : "false",
     compact: compactInput.checked ? "true" : "false",
+    tbd: tbdInput.checked ? "true" : "false",
   };
 }
 
@@ -154,7 +168,7 @@ function entriesUrl() {
   const parameters = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
     if (value && !(key === "sort" && value === "manual") &&
-        !((key === "deleted" || key === "compact") && value === "false")) {
+        !((key === "deleted" || key === "compact" || key === "tbd") && value === "false")) {
       parameters.set(key, value);
     }
   });
@@ -175,12 +189,14 @@ function loadFiltersFromUrl() {
   }
   deletedInput.checked = parameters.get("deleted") === "true";
   compactInput.checked = parameters.get("compact") === "true";
+  tbdInput.checked = parameters.get("tbd") === "true";
 }
 
 function manualOrderingEnabled() {
   const filters = filtersFromPage();
   return filters.sort === "manual" && !filters.q && !filters.target_date_from &&
-    !filters.target_date_to && !filters.initials && filters.deleted === "false";
+    !filters.target_date_to && !filters.initials && filters.deleted === "false" &&
+    filters.tbd === "true";
 }
 
 async function saveEntry(entry, updates) {
@@ -366,7 +382,7 @@ async function saveOrder() {
 
 function renderEntries() {
   entriesContainer.innerHTML = "";
-  entriesContainer.classList.toggle("compact-view", compactInput.checked);
+  entriesContainer.classList.toggle("compact-view", compactInput.checked || isKioskMode());
   resultCount.textContent = `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
   if (!entries.length) {
     const filtered = location.search.length > 0;
@@ -399,6 +415,8 @@ function renderEntries() {
           ${!entry.deleted_at && entry.external_system
             ? '<button class="refresh-project-button">Refresh</button><button class="unlink-project-button">Unlink</button>' : ""}
           ${!entry.deleted_at ? '<button class="defer-week-button" title="Move target date out seven days">+1 week</button>' : ""}
+          ${!entry.deleted_at && entry.target_date
+            ? '<button class="clear-date-button" title="Clear the target date">TBD</button>' : ""}
           ${!entry.deleted_at && entry.progress === 100
             ? '<button class="add-issue-button">Create Ticket</button>' : ""}
           <button class="notes-button">${entry.notes ? "Notes" : (entry.deleted_at ? "No notes" : "Add notes")}</button>
@@ -531,6 +549,22 @@ function renderEntries() {
         }
       });
 
+      item.querySelector(".clear-date-button")?.addEventListener("click", async event => {
+        event.currentTarget.disabled = true;
+        activeRequests++;
+        setStatus("Clearing target date...");
+        try {
+          await saveEntry(entry, { target_date: null });
+          renderEntries();
+          setStatus();
+        } catch (error) {
+          setStatus(error.message, true);
+          event.currentTarget.disabled = false;
+        } finally {
+          finishRequest();
+        }
+      });
+
       item.querySelector(".link-project-button")?.addEventListener("click", () =>
         showProjectPicker(item, entry)
       );
@@ -608,7 +642,7 @@ function renderEntries() {
         item.innerHTML = `
           <div class="edit-form">
             <input class="edit-name" type="text" maxlength="500">
-            <input class="edit-date" type="date" value="${entry.target_date}" required>
+            <input class="edit-date" type="date" value="${entry.target_date || ""}" required>
             <input class="edit-initials" type="text" maxlength="5" value="${entry.initials}">
             <button class="save-button">Save</button>
             <button class="cancel-button">Cancel</button>
@@ -668,12 +702,12 @@ async function addEntry() {
       method: "POST",
       body: JSON.stringify({
         name,
-        target_date: dateInput.value || localToday(),
+        target_date: dateInput.value || null,
         initials: cleanInitials(initialsInput.value),
       }),
     });
     entryInput.value = "";
-    dateInput.value = localToday();
+    dateInput.value = "";
     initialsInput.value = "";
     await loadEntries(true);
     entryInput.focus();
@@ -690,7 +724,18 @@ function filtersChanged() {
 }
 
 loadFiltersFromUrl();
-dateInput.value = localToday();
+themeInput.checked = document.documentElement.classList.contains("dark-mode");
+themeInput.addEventListener("change", () => {
+  localStorage.setItem(themeKey, themeInput.checked ? "dark" : "light");
+  applyTheme(themeInput.checked);
+});
+kioskInput.checked = localStorage.getItem(kioskModeKey) === "true";
+applyKioskMode(kioskInput.checked);
+kioskInput.addEventListener("change", () => {
+  localStorage.setItem(kioskModeKey, kioskInput.checked ? "true" : "false");
+  applyKioskMode(kioskInput.checked);
+  renderEntries();
+});
 initialsInput.addEventListener("input", () => initialsInput.value = cleanInitials(initialsInput.value));
 filterInitialsInput.addEventListener("input", () => {
   filterInitialsInput.value = cleanInitials(filterInitialsInput.value);
@@ -700,7 +745,7 @@ searchInput.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(filtersChanged, 300);
 });
-[dateFromInput, dateToInput, sortInput, deletedInput, compactInput].forEach(element =>
+[dateFromInput, dateToInput, sortInput, deletedInput, compactInput, tbdInput].forEach(element =>
   element.addEventListener("change", filtersChanged)
 );
 clearFiltersButton.addEventListener("click", () => {
@@ -711,6 +756,7 @@ clearFiltersButton.addEventListener("click", () => {
   sortInput.value = "manual";
   deletedInput.checked = false;
   compactInput.checked = false;
+  tbdInput.checked = false;
   filtersChanged();
 });
 addButton.addEventListener("click", addEntry);

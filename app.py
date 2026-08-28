@@ -174,6 +174,8 @@ def create_app(database_path: Path | None = None) -> Flask:
         }), 409
 
     def validate_date(value, field_name="Target date"):
+        if value is None or value == "":
+            return None, None
         if not isinstance(value, str):
             return None, f"{field_name} must be in YYYY-MM-DD format."
         try:
@@ -295,6 +297,12 @@ def create_app(database_path: Path | None = None) -> Flask:
         elif deleted != "all":
             return jsonify({"error": "deleted must be false, true, or all."}), 400
 
+        tbd = request.args.get("tbd", "false").lower()
+        if tbd == "false":
+            clauses.append("target_date IS NOT NULL")
+        elif tbd != "true":
+            return jsonify({"error": "tbd must be true or false."}), 400
+
         for query_name, operator in (("target_date_from", ">="), ("target_date_to", "<=")):
             value = request.args.get(query_name)
             if value:
@@ -332,8 +340,6 @@ def create_app(database_path: Path | None = None) -> Flask:
     @app.post("/api/entries")
     def add_entry():
         payload = request.get_json(silent=True) or {}
-        if not payload.get("target_date"):
-            payload["target_date"] = date.today().isoformat()
         values, error = validate_fields(payload, creating=True)
         if error:
             return jsonify({"error": error}), 400
@@ -352,7 +358,7 @@ def create_app(database_path: Path | None = None) -> Flask:
                 ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
                 (
-                    values["name"], values.get("progress", 0), values["target_date"],
+                    values["name"], values.get("progress", 0), values.get("target_date"),
                     values.get("initials", ""), values.get("notes", ""),
                     next_order, now, now,
                 ),
@@ -421,7 +427,9 @@ def create_app(database_path: Path | None = None) -> Flask:
             if before["revision"] != revision:
                 return conflict_response(before)
 
-            previous_date = date.fromisoformat(before["target_date"])
+            previous_date = (
+                date.fromisoformat(before["target_date"]) if before["target_date"] else date.today()
+            )
             new_target_date = (previous_date + timedelta(days=7)).isoformat()
             now = utc_now()
             connection.execute(
@@ -441,7 +449,7 @@ def create_app(database_path: Path | None = None) -> Flask:
                 """,
                 (
                     entry_id, before["name"], before["initials"], abbreviation,
-                    before["target_date"], new_target_date, client_id(), now,
+                    previous_date.isoformat(), new_target_date, client_id(), now,
                 ),
             )
             record_event(

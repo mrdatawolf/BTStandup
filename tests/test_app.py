@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,7 @@ def create_entry(client, name="Test", **values):
 
 def test_health_version_and_empty_list(client):
     assert client.get("/api/health").get_json() == {
-        "status": "ok", "schema_version": 5,
+        "status": "ok", "schema_version": 6,
     }
     assert client.get("/api/version").get_json() == {"version": "1.1.2"}
     assert client.get("/api/config").get_json() == {
@@ -50,13 +50,59 @@ def test_browser_config_only_exposes_safe_issue_url(database_path, monkeypatch, 
     }
 
 
-def test_create_defaults_target_date_and_records_history(client):
+def test_create_defaults_target_date_to_tbd_and_records_history(client):
     created = create_entry(client, "Ship MVP", initials="PT")
-    assert created["target_date"] == date.today().isoformat()
+    assert created["target_date"] is None
     assert created["revision"] == 1
     history = client.get(f"/api/entries/{created['id']}/history").get_json()
     assert [event["event_type"] for event in history] == ["created"]
     assert history[0]["after"]["name"] == "Ship MVP"
+
+
+def test_tbd_entries_are_hidden_by_default_and_shown_with_tbd_filter(client):
+    tbd_entry = create_entry(client, "Undated")
+    dated_entry = create_entry(client, "Dated", target_date="2026-08-20")
+
+    assert [entry["id"] for entry in client.get("/api/entries").get_json()] == [
+        dated_entry["id"],
+    ]
+    assert {entry["id"] for entry in client.get("/api/entries?tbd=true").get_json()} == {
+        tbd_entry["id"], dated_entry["id"],
+    }
+
+
+def test_tbd_entries_are_excluded_from_date_range_filters(client):
+    create_entry(client, "Undated")
+    dated_entry = create_entry(client, "Dated", target_date="2026-08-20")
+    response = client.get("/api/entries?tbd=true&target_date_from=2026-01-01").get_json()
+    assert [entry["id"] for entry in response] == [dated_entry["id"]]
+
+
+def test_target_date_asc_sorts_tbd_entries_first(client):
+    tbd_entry = create_entry(client, "Undated")
+    dated_entry = create_entry(client, "Dated", target_date="2026-08-20")
+    response = client.get("/api/entries?tbd=true&sort=target_date_asc").get_json()
+    assert [entry["id"] for entry in response] == [tbd_entry["id"], dated_entry["id"]]
+
+
+def test_clearing_target_date_sets_it_to_tbd(client):
+    created = create_entry(client, target_date="2026-08-20")
+    response = client.patch(
+        f"/api/entries/{created['id']}",
+        json={"target_date": None, "revision": created["revision"]},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["target_date"] is None
+
+
+def test_defer_week_on_tbd_entry_defers_from_today(client):
+    created = create_entry(client, "Undated")
+    response = client.post(
+        f"/api/entries/{created['id']}/defer-week",
+        json={"revision": created["revision"]},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["target_date"] == (date.today() + timedelta(days=7)).isoformat()
 
 
 def test_update_requires_revision_and_records_before_after(client):
@@ -139,7 +185,7 @@ def test_defer_week_without_title_prefix_records_null_abbreviation(client):
 
 
 def test_soft_delete_restore_and_history(client):
-    created = create_entry(client)
+    created = create_entry(client, target_date="2026-08-20")
     deleted_response = client.delete(
         f"/api/entries/{created['id']}", json={"revision": created["revision"]}
     )
@@ -185,7 +231,7 @@ def test_filters_and_sorts_entries(client):
 
 @pytest.mark.parametrize(
     "query",
-    ["deleted=maybe", "target_date_from=bad", "initials=TOOLONG", "sort=bad"],
+    ["deleted=maybe", "target_date_from=bad", "initials=TOOLONG", "sort=bad", "tbd=maybe"],
 )
 def test_rejects_invalid_filters(client, query):
     assert client.get(f"/api/entries?{query}").status_code == 400
@@ -293,8 +339,8 @@ def test_project_link_rejects_stale_revision(client, monkeypatch):
 
 
 def test_reorders_entries_with_revisions(client):
-    first = create_entry(client, "First")
-    second = create_entry(client, "Second")
+    first = create_entry(client, "First", target_date="2026-08-20")
+    second = create_entry(client, "Second", target_date="2026-08-21")
     response = client.put("/api/entries/order", json={"entries": [
         {"id": second["id"], "revision": second["revision"]},
         {"id": first["id"], "revision": first["revision"]},
@@ -355,10 +401,10 @@ def test_migrates_mvp3_database(tmp_path):
 
 
 def test_backup_can_replace_same_day_file(client, database_path, tmp_path):
-    create_entry(client, "Back me up")
+    create_entry(client, "Back me up", target_date="2026-08-20")
     directory = tmp_path / "backups"
     backup_path = create_backup(database_path, directory, 30)
-    create_entry(client, "Added later")
+    create_entry(client, "Added later", target_date="2026-08-21")
     assert create_backup(database_path, directory, 30) == backup_path
     restored = create_app(backup_path).test_client().get("/api/entries").get_json()
     assert [entry["name"] for entry in restored] == ["Back me up", "Added later"]

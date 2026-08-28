@@ -44,6 +44,7 @@ def run_migrations(database_path: Path | None = None) -> list[int]:
     path = database_path or get_database_path()
     applied_now = []
     with closing(connect_database(path)) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -91,6 +92,12 @@ def run_migrations(database_path: Path | None = None) -> list[int]:
                   f"VALUES ({version}, '{escaped_name}');\nCOMMIT;"
             )
             applied_now.append(version)
+
+        if applied_now:
+            violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise RuntimeError(f"Migrations left dangling foreign keys: {violations}")
+        connection.execute("PRAGMA foreign_keys = ON")
 
     return applied_now
 
