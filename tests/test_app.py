@@ -32,7 +32,9 @@ def test_health_version_and_empty_list(client):
         "status": "ok", "schema_version": 5,
     }
     assert client.get("/api/version").get_json() == {"version": "1.1.2"}
-    assert client.get("/api/config").get_json() == {"issue_create_url": ""}
+    assert client.get("/api/config").get_json() == {
+        "issue_create_url": "https://erp.biztechro.com/app/issue/new-issue",
+    }
     assert client.get("/api/entries").get_json() == []
 
 
