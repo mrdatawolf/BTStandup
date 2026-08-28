@@ -90,7 +90,11 @@ function showCompletionDialog(entry) {
   completionTitle.value = entry.name;
   copyCompletionTitle.textContent = "Copy";
   openIssueForm.classList.toggle("unavailable", !issueCreateUrl);
-  if (issueCreateUrl) openIssueForm.href = issueCreateUrl;
+  if (issueCreateUrl) {
+    const issueUrl = new URL(issueCreateUrl);
+    issueUrl.searchParams.set("subject", completionTitle.value);
+    openIssueForm.href = issueUrl.toString();
+  }
   completionDialog.showModal();
 }
 
@@ -396,7 +400,7 @@ function renderEntries() {
             ? '<button class="refresh-project-button">Refresh</button><button class="unlink-project-button">Unlink</button>' : ""}
           ${!entry.deleted_at ? '<button class="defer-week-button" title="Move target date out seven days">+1 week</button>' : ""}
           ${!entry.deleted_at && entry.progress === 100
-            ? '<button class="add-issue-button">Add issue</button>' : ""}
+            ? '<button class="add-issue-button">Create Ticket</button>' : ""}
           <button class="notes-button">${entry.notes ? "Notes" : (entry.deleted_at ? "No notes" : "Add notes")}</button>
           <button class="history-button">History</button>
           ${entry.deleted_at

@@ -27,7 +27,10 @@ def get_biztech_projects_config() -> dict:
 
 
 def get_issue_create_url() -> str:
-    return os.getenv("ISSUE_CREATE_URL", "").strip()
+    return os.getenv(
+        "ISSUE_CREATE_URL",
+        "https://erp.biztechro.com/app/issue/new-issue",
+    ).strip()
 
 
 def connect_database(database_path: Path | None = None) -> sqlite3.Connection:
