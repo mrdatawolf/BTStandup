@@ -33,10 +33,6 @@ if (!clientId) {
 const kioskModeKey = "btStandupKioskMode";
 const themeKey = "btStandupTheme";
 
-function isKioskMode() {
-  return document.body.classList.contains("kiosk-mode");
-}
-
 function applyKioskMode(enabled) {
   document.body.classList.toggle("kiosk-mode", enabled);
 }
@@ -382,7 +378,7 @@ async function saveOrder() {
 
 function renderEntries() {
   entriesContainer.innerHTML = "";
-  entriesContainer.classList.toggle("compact-view", compactInput.checked || isKioskMode());
+  entriesContainer.classList.toggle("compact-view", compactInput.checked);
   resultCount.textContent = `${entries.length} ${entries.length === 1 ? "entry" : "entries"}`;
   if (!entries.length) {
     const filtered = location.search.length > 0;

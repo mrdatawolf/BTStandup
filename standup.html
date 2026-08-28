@@ -178,7 +178,7 @@
       margin-bottom: 24px;
     }
     .header-toggles { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-    .kiosk-toggle, .theme-toggle { flex: 0 0 auto; white-space: nowrap; }
+    .kiosk-toggle, .theme-toggle, .compact-toggle { flex: 0 0 auto; white-space: nowrap; }
 
     .field-label { display: block; margin-bottom: 5px; color: var(--text-subtle); font-size: 12px; font-weight: 700; }
 
@@ -544,6 +544,11 @@
     <div class="app-header">
       <h1>Progress Tracker</h1>
       <div class="header-toggles">
+        <label class="view-toggle compact-toggle">
+          <input id="compactInput" type="checkbox" />
+          <span class="toggle-slider" aria-hidden="true"></span>
+          Compact view
+        </label>
         <label class="view-toggle theme-toggle">
           <input id="themeInput" type="checkbox" />
           <span class="toggle-slider" aria-hidden="true"></span>
@@ -583,11 +588,6 @@
       <div class="filter-actions">
         <label class="deleted-toggle"><input id="deletedInput" type="checkbox" /> View deleted entries</label>
         <label class="deleted-toggle"><input id="tbdInput" type="checkbox" /> Show TBD entries</label>
-        <label class="view-toggle">
-          <input id="compactInput" type="checkbox" />
-          <span class="toggle-slider" aria-hidden="true"></span>
-          Compact view
-        </label>
         <span id="resultCount" class="result-count"></span>
         <button id="clearFiltersButton" class="clear-button">Clear filters</button>
       </div>
