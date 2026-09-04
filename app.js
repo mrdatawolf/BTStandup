@@ -86,9 +86,7 @@ function cleanInitials(value) {
 function formatDate(value) {
   if (!value) return "TBD";
   const [year, month, day] = value.split("-");
-  return new Date(year, Number(month) - 1, day).toLocaleDateString(undefined, {
-    year: "numeric", month: "short", day: "numeric",
-  });
+  return `${month.padStart(2, "0")}/${day.padStart(2, "0")}/${year.slice(-2)}`;
 }
 
 function formatTimestamp(value) {
@@ -432,7 +430,7 @@ function renderEntries() {
       <div class="bar-background"><div class="bar-fill" style="width: ${entry.progress}%"></div></div>`;
 
     item.querySelector(".entry-name").textContent = entry.name;
-    item.querySelector(".entry-date").textContent = `Target: ${formatDate(entry.target_date)}`;
+    item.querySelector(".entry-date").textContent = formatDate(entry.target_date);
     item.querySelector(".initials-badge").textContent = entry.initials || "Initials";
     item.querySelector(".history-button").addEventListener("click", () => toggleHistory(item, entry));
     if (entry.external_system) {
